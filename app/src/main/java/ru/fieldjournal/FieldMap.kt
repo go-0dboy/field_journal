@@ -270,10 +270,9 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
         val currentLayer = layer
         val currentOffline = offline
         val currentTemplate = tiles.customUrl
-        val currentInfo = offlineInfo
         workers.execute {
             val image = if (key.generation != generation) null else
-                runCatching { tiles.read(currentLayer, currentOffline, currentTemplate, tile, overlay, currentInfo) }.getOrNull()
+                runCatching { tiles.read(currentLayer, currentOffline, currentTemplate, tile, overlay) }.getOrNull()
             post {
                 pending.remove(key)
                 if (key.generation == generation) {

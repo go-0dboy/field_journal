@@ -178,3 +178,108 @@ internal fun drawSymbol(canvas: Canvas, x: Float, y: Float, radius: Float, type:
     }
     canvas.restore()
 }
+
+internal enum class NavIcon { MAP, PIN, NOTE, DATA }
+
+internal fun Context.navigationAction(title: String, icon: NavIcon, selected: Boolean, click: () -> Unit) =
+    action(title, click = click).apply {
+        textSize = 12f
+        minHeight = dp(56)
+        setPadding(dp(2), dp(5), dp(2), dp(5))
+        isSelected = selected
+        val ink = if (selected) Palette.pine else Palette.muted
+        setTextColor(ink)
+        background = RippleDrawable(ColorStateList.valueOf(0x254b816d),
+            panel(if (selected) Palette.pale else Palette.white, 14), null)
+        val glyph = object : android.graphics.drawable.Drawable() {
+            private val pen = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = ink
+                style = Paint.Style.STROKE
+                strokeCap = Paint.Cap.ROUND
+                strokeJoin = Paint.Join.ROUND
+                strokeWidth = 1.8f
+            }
+
+            override fun draw(canvas: Canvas) {
+                canvas.save()
+                canvas.translate(bounds.left.toFloat(), bounds.top.toFloat())
+                canvas.scale(bounds.width() / 24f, bounds.height() / 24f)
+                fun path(points: Path.() -> Unit) = canvas.drawPath(Path().apply(points), pen)
+                when (icon) {
+                    NavIcon.MAP -> path {
+                        moveTo(3f, 6f); lineTo(9f, 3f); lineTo(15f, 6f); lineTo(21f, 3f)
+                        lineTo(21f, 18f); lineTo(15f, 21f); lineTo(9f, 18f); lineTo(3f, 21f); close()
+                        moveTo(9f, 3f); lineTo(9f, 18f)
+                        moveTo(15f, 6f); lineTo(15f, 21f)
+                    }
+                    NavIcon.PIN -> {
+                        path {
+                            moveTo(12f, 22f)
+                            cubicTo(10f, 19f, 5f, 15f, 5f, 10f)
+                            cubicTo(5f, 1f, 19f, 1f, 19f, 10f)
+                            cubicTo(19f, 15f, 14f, 19f, 12f, 22f)
+                        }
+                        canvas.drawCircle(12f, 10f, 2.5f, pen)
+                    }
+                    NavIcon.NOTE -> {
+                        canvas.drawRoundRect(5f, 3f, 20f, 21f, 2f, 2f, pen)
+                        canvas.drawLine(9f, 3f, 9f, 21f, pen)
+                        canvas.drawLine(12f, 9f, 17f, 9f, pen)
+                        canvas.drawLine(12f, 13f, 17f, 13f, pen)
+                    }
+                    NavIcon.DATA -> {
+                        canvas.drawRoundRect(3f, 5f, 21f, 20f, 2f, 2f, pen)
+                        canvas.drawLine(3f, 10f, 21f, 10f, pen)
+                        canvas.drawLine(10f, 14f, 14f, 14f, pen)
+                    }
+                }
+                canvas.restore()
+            }
+
+            override fun setAlpha(alpha: Int) { pen.alpha = alpha }
+            override fun setColorFilter(colorFilter: ColorFilter?) { pen.colorFilter = colorFilter }
+            @Deprecated("Drawable opacity is no longer used")
+            override fun getOpacity() = PixelFormat.TRANSLUCENT
+        }
+        glyph.setBounds(0, 0, dp(23), dp(23))
+        compoundDrawablePadding = dp(3)
+        setCompoundDrawables(null, glyph, null, null)
+    }
+
+@android.annotation.SuppressLint("ViewConstructor")
+internal class CatalogRow(context: Context) : LinearLayout(context) {
+    private var type = objectType("")
+    private val symbol = object : View(context) {
+        override fun onDraw(canvas: Canvas) {
+            drawSymbol(canvas, width / 2f, height / 2f, minOf(width, height) * 0.45f, type)
+        }
+    }
+    private val title = context.label("", 17f, Palette.ink, true)
+    private val detail = context.label("", 13f, Palette.muted)
+    init {
+        orientation = VERTICAL
+        setPadding(0, 0, 0, context.dp(7))
+        addView(context.horizontal().apply {
+            background = context.panel(Palette.white, 14, Palette.border)
+            minimumHeight = context.dp(68)
+            setPadding(context.dp(12), context.dp(10), context.dp(12), context.dp(10))
+            addView(symbol, context.dp(39), context.dp(39))
+            addView(context.vertical().apply {
+                setPadding(context.dp(10), 0, context.dp(8), 0)
+                addView(title)
+                addView(detail)
+            }, LayoutParams(0, -2, 1f))
+            addView(context.label("›", 24f, Palette.green).apply {
+                importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
+            })
+        }, -1, -2)
+    }
+
+    fun bind(site: Site) {
+        type = objectType(site.type)
+        symbol.invalidate()
+        title.text = site.title
+        detail.text = listOfNotNull(type.title, site.period.ifBlank { null },
+            if (site.area) areaLabel(areaSquareMeters(site.vertices)) else null).joinToString(" · ")
+    }
+}

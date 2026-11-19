@@ -17,7 +17,7 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
 
-internal class JournalStore(context: Context) : SQLiteOpenHelper(context, "field-journal.db", null, 1) {
+internal class JournalStore(context: Context, private val backupLimit: Long = MAX_ARCHIVE) : SQLiteOpenHelper(context, "field-journal.db", null, 1) {
     private val cache = context.cacheDir
     val attachments = File(context.filesDir, "attachments").apply { mkdirs() }
     private val snapshot = AtomicFile(File(context.filesDir, "journal-autosave.json"))
@@ -47,25 +47,60 @@ internal class JournalStore(context: Context) : SQLiteOpenHelper(context, "field
             put("payload", json.toString())
         }, policy)
 
-    @Synchronized fun save(site: Site) {
-        check(write(writableDatabase, "sites", site.id, site.updated, site.feature(), SQLiteDatabase.CONFLICT_REPLACE) != -1L)
+    private fun record(table: String, id: String): JSONObject? =
+        readableDatabase.query(table, arrayOf("payload"), "id = ?", arrayOf(id), null, null, null).use {
+            if (it.moveToFirst()) JSONObject(it.getString(0)) else null
+        }
+
+    fun site(id: String) = record("sites", id)?.let { Site.read(it, withAttachments = true, validate = false) }
+    fun note(id: String) = record("notes", id)?.let(Note::read)
+
+    @Synchronized fun save(site: Site, removeAttachments: Set<String> = emptySet()) {
+        val previous = site(site.id)?.attachments.orEmpty()
+        val files = (site.attachments + previous).filterNot { it.id in removeAttachments }.distinctBy(Attachment::id)
+        val saved = site.copy(attachments = files)
+        check(write(writableDatabase, "sites", saved.id, saved.updated, saved.feature(), SQLiteDatabase.CONFLICT_REPLACE) != -1L)
         scheduleSnapshot()
+        removeUnreferenced(removeAttachments)
     }
 
-    @Synchronized fun save(note: Note) {
-        check(write(writableDatabase, "notes", note.id, note.updated, note.json(), SQLiteDatabase.CONFLICT_REPLACE) != -1L)
+    @Synchronized fun save(note: Note, removeAttachments: Set<String> = emptySet()) {
+        val previous = note(note.id)?.attachments.orEmpty()
+        val files = (note.attachments + previous).filterNot { it.id in removeAttachments }.distinctBy(Attachment::id)
+        val saved = note.copy(attachments = files)
+        check(write(writableDatabase, "notes", saved.id, saved.updated, saved.json(), SQLiteDatabase.CONFLICT_REPLACE) != -1L)
         scheduleSnapshot()
+        removeUnreferenced(removeAttachments)
     }
 
     @Synchronized fun deleteSite(id: String) {
+        val files = site(id)?.attachments.orEmpty()
         writableDatabase.delete("sites", "id = ?", arrayOf(id))
         scheduleSnapshot()
+        removeUnreferenced(files.map(Attachment::id).toSet())
     }
 
     @Synchronized fun deleteNote(id: String) {
+        val files = note(id)?.attachments.orEmpty()
         writableDatabase.delete("notes", "id = ?", arrayOf(id))
         scheduleSnapshot()
+        removeUnreferenced(files.map(Attachment::id).toSet())
     }
+
+    // Only consider files from committed references. Fresh camera and picker files may still be in flight.
+    private fun removeUnreferenced(candidates: Set<String>) {
+        if (candidates.isEmpty()) return
+        runCatching {
+            val referenced = attachmentRecords(sites(), notes()).map(Attachment::id).toSet()
+            (candidates - referenced).forEach {
+                val file = attachmentFile(it)
+                if (file.exists() && !file.delete()) android.util.Log.w("FieldJournal", "Could not remove an unused attachment")
+            }
+        }.onFailure { android.util.Log.w("FieldJournal", "Could not check attachment references", it) }
+    }
+
+    private fun attachmentRecords(sites: List<Site>, notes: List<Note>) =
+        (sites.flatMap(Site::attachments) + notes.flatMap(Note::attachments)).distinctBy(Attachment::id)
 
     fun attachmentFile(id: String): File {
         require(attachmentId.matches(id))
@@ -117,10 +152,10 @@ internal class JournalStore(context: Context) : SQLiteOpenHelper(context, "field
     @Synchronized fun appendAttachment(owner: String, isNote: Boolean, record: Attachment) {
         val now = System.currentTimeMillis()
         if (isNote) {
-            val note = notes().find { it.id == owner } ?: error("Запись дневника удалена")
+            val note = note(owner) ?: error("Запись дневника удалена")
             save(note.copy(attachments = (note.attachments + record).distinctBy(Attachment::id), updated = now))
         } else {
-            val site = sites().find { it.id == owner } ?: error("Карточка объекта удалена")
+            val site = site(owner) ?: error("Карточка объекта удалена")
             save(site.copy(attachments = (site.attachments + record).distinctBy(Attachment::id), updated = now))
         }
     }
@@ -129,20 +164,40 @@ internal class JournalStore(context: Context) : SQLiteOpenHelper(context, "field
         out.write(collection(sites(), false).toString(2).toByteArray(Charsets.UTF_8))
     }
 
-    @Synchronized fun exportBackup(out: OutputStream) {
+    fun exportBackup(out: OutputStream) = exportBackup { out }
+
+    fun exportBackup(openOutput: () -> OutputStream) {
+        val archive = File.createTempFile("journal-backup-", ".zip", cache)
+        try {
+            synchronized(this) { writeBackup(archive) }
+            openOutput().use { out -> archive.inputStream().use { it.copyTo(out) } }
+        } finally {
+            archive.delete()
+        }
+    }
+
+    private fun writeBackup(archive: File) {
         val sites = sites()
         val notes = notes()
-        val files = (sites.flatMap(Site::attachments) + notes.flatMap(Note::attachments)).distinctBy(Attachment::id)
-        ZipOutputStream(out).use { zip ->
+        val bytes = manifest(sites, notes).toString().toByteArray(Charsets.UTF_8)
+        require(bytes.size <= MAX_JSON) { "Описания записей превышают допустимый размер резервной копии" }
+        val files = attachmentRecords(sites, notes).map { record ->
+            attachmentFile(record.id).also {
+                require(it.isFile && it.length() <= MAX_ATTACHMENT) { "Недоступное или слишком большое вложение: ${record.name}" }
+            }
+        }
+        require(files.sumOf(File::length) <= backupLimit) { "Вложения превышают допустимый объём восстановления ZIP" }
+        ZipOutputStream(archive.outputStream()).use { zip ->
             zip.putNextEntry(ZipEntry("journal.json"))
-            zip.write(manifest(sites, notes).toString().toByteArray(Charsets.UTF_8))
+            zip.write(bytes)
             zip.closeEntry()
             for (file in files) {
-                zip.putNextEntry(ZipEntry("attachments/${file.id}"))
-                attachmentFile(file.id).inputStream().use { it.copyTo(zip) }
+                zip.putNextEntry(ZipEntry("attachments/${file.name}"))
+                file.inputStream().use { it.copyTo(zip) }
                 zip.closeEntry()
             }
         }
+        require(archive.length() <= backupLimit) { "ZIP превышает допустимый объём восстановления" }
     }
 
     fun importGeoJson(input: InputStream): ImportResult {
@@ -155,7 +210,7 @@ internal class JournalStore(context: Context) : SQLiteOpenHelper(context, "field
         val installed = mutableListOf<File>()
         try {
             val archive = File(folder, "backup.zip")
-            archive.outputStream().use { input.copyLimited(it, MAX_ARCHIVE) }
+            archive.outputStream().use { input.copyLimited(it, backupLimit) }
             ZipFile(archive).use { zip ->
                 val entry = zip.getEntry("journal.json") ?: error("В архиве отсутствует journal.json")
                 val json = zip.getInputStream(entry).use { it.readJson() }
@@ -164,8 +219,8 @@ internal class JournalStore(context: Context) : SQLiteOpenHelper(context, "field
                 }
                 val sites = readFeatures(json.getJSONObject("sites"), true)
                 val notes = json.getJSONArray("notes").objects().map(Note::read)
-                val files = (sites.flatMap(Site::attachments) + notes.flatMap(Note::attachments)).distinctBy(Attachment::id)
-                var remaining = MAX_ARCHIVE
+                val files = attachmentRecords(sites, notes)
+                var remaining = backupLimit
                 for (attachment in files) {
                     val member = zip.getEntry("attachments/${attachment.id}") ?: error("В архиве отсутствует ${attachment.name}")
                     require(!member.isDirectory && member.size in 0..minOf(remaining, MAX_ATTACHMENT)) { "Превышен размер вложений" }
@@ -186,7 +241,7 @@ internal class JournalStore(context: Context) : SQLiteOpenHelper(context, "field
                         temp.delete()
                     }
                 }
-                return importRecords(sites, notes)
+                return importRecords(sites, notes).also { removeUnreferenced(installed.map(File::getName).toSet()) }
             }
         } catch (error: Exception) {
             installed.forEach(File::delete)
@@ -227,7 +282,7 @@ internal class JournalStore(context: Context) : SQLiteOpenHelper(context, "field
 
     private fun InputStream.readJson(): JSONObject {
         val bytes = java.io.ByteArrayOutputStream()
-        copyLimited(bytes, 32L * 1024 * 1024)
+        copyLimited(bytes, MAX_JSON)
         return JSONObject(bytes.toString(Charsets.UTF_8.name()).removePrefix("\uFEFF"))
     }
 
@@ -250,6 +305,7 @@ internal class JournalStore(context: Context) : SQLiteOpenHelper(context, "field
 
     companion object {
         const val MAX_ATTACHMENT = 100L * 1024 * 1024
+        private const val MAX_JSON = 32L * 1024 * 1024
         private const val MAX_ARCHIVE = 2L * 1024 * 1024 * 1024
         private val snapshotExecutor = Executors.newSingleThreadScheduledExecutor()
         private var instance: JournalStore? = null

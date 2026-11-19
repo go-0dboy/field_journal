@@ -19,7 +19,10 @@ import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.inputmethod.InputMethodManager
+import android.widget.BaseAdapter
 import android.widget.FrameLayout
+import android.widget.ListView
+import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -29,8 +32,8 @@ import java.util.concurrent.Executors
 import kotlin.math.roundToInt
 
 class MainActivity : Activity() {
-    private enum class Tab(val title: String, val symbol: String) {
-        MAP("Карта", "⌖"), SITES("Объекты", "◇"), NOTES("Дневник", "▤"), SETTINGS("Данные", "▦")
+    private enum class Tab(val title: String, val icon: NavIcon) {
+        MAP("Карта", NavIcon.MAP), SITES("Объекты", NavIcon.PIN), NOTES("Дневник", NavIcon.NOTE), SETTINGS("Данные", NavIcon.DATA)
     }
     private enum class DrawMode { NONE, POINT, AREA, MOVE_POINT, MOVE_AREA }
 
@@ -46,7 +49,6 @@ class MainActivity : Activity() {
     private lateinit var mapPanel: LinearLayout
     private lateinit var mapStatus: TextView
     private lateinit var mapActions: LinearLayout
-    private lateinit var gpsButton: View
     private val handler = Handler(Looper.getMainLooper())
     private var tab = Tab.MAP
     private var previousTab = Tab.MAP
@@ -56,6 +58,11 @@ class MainActivity : Activity() {
     private var drawMode = DrawMode.NONE
     private var geometrySite: String? = null
     private val vertices = mutableListOf<Coordinate>()
+    private var keyboardVisible = false
+    private var catalogIndex = 0
+    private var catalogOffset = 0
+    private var catalogView: ListView? = null
+    private var editorScroll = 0
     private var search = ""
     private var filter: String? = null
     private var tracking = false
@@ -69,7 +76,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         store = JournalStore.get(this)
-        tiles = MapTiles(this)
+        tiles = MapTiles.get(this)
         if (HttpResponseCache.getInstalled() == null) runCatching {
             HttpResponseCache.install(File(cacheDir, "online-tiles"), 64L * 1024 * 1024)
         }
@@ -85,6 +92,9 @@ class MainActivity : Activity() {
                 vertices.add(Coordinate(vertex[0], vertex[1]))
             }
             search = it.getString("search").orEmpty()
+            catalogIndex = it.getInt("catalogIndex")
+            catalogOffset = it.getInt("catalogOffset")
+            editorScroll = it.getInt("editorScroll")
             filter = it.getString("filter")
             tracking = it.getBoolean("tracking")
             pendingOwner = it.getString("pendingOwner")
@@ -107,6 +117,8 @@ class MainActivity : Activity() {
             if (android.os.Build.VERSION.SDK_INT >= 30) {
                 val edges = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
                 val keyboard = insets.getInsets(WindowInsets.Type.ime())
+                keyboardVisible = insets.isVisible(WindowInsets.Type.ime())
+                updateNavigationVisibility()
                 view.setPadding(edges.left, edges.top, edges.right, maxOf(edges.bottom, keyboard.bottom))
             } else {
                 view.setPadding(insets.systemWindowInsetLeft, insets.systemWindowInsetTop,
@@ -124,7 +136,11 @@ class MainActivity : Activity() {
         root.requestApplyInsets()
         createMap()
         render()
+        (lastNonConfigurationInstance as? EditorDraft)?.let { editView?.restoreDraft(it) }
     }
+
+    @Deprecated("Retains unsaved editor input across configuration changes")
+    override fun onRetainNonConfigurationInstance(): Any? = editView?.unsavedDraft()
 
     override fun onSaveInstanceState(out: Bundle) {
         editView?.flush()
@@ -136,6 +152,10 @@ class MainActivity : Activity() {
         out.putString("geometrySite", geometrySite)
         out.putDoubleArray("vertices", vertices.flatMap { listOf(it.latitude, it.longitude) }.toDoubleArray())
         out.putString("search", search)
+        rememberCatalogPosition()
+        out.putInt("catalogIndex", catalogIndex)
+        out.putInt("catalogOffset", catalogOffset)
+        out.putInt("editorScroll", editView?.scrollPosition() ?: 0)
         out.putString("filter", filter)
         out.putBoolean("tracking", tracking)
         out.putString("pendingOwner", pendingOwner)
@@ -158,6 +178,7 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        editView?.stopSaving()
         map.release()
         super.onDestroy()
     }
@@ -173,30 +194,34 @@ class MainActivity : Activity() {
     }
 
     private fun render() {
-        editView?.flush()
+        if (editView?.flush() == false) return
+        rememberCatalogPosition()
+        catalogView = null
         editView = null
         content.removeAllViews()
         header.removeAllViews()
         nav.removeAllViews()
         if (editorId != null) {
-            val id = editorId
-            val site = if (!editorIsNote) store.sites().find { it.id == id } else null
-            val note = if (editorIsNote) store.notes().find { it.id == id } else null
+            val id = requireNotNull(editorId)
+            val site = if (!editorIsNote) store.site(id) else null
+            val note = if (editorIsNote) store.note(id) else null
             if (site != null || note != null) {
-                setHeader(if (note != null) "Запись дневника" else "Карточка объекта", null, true)
-                nav.visibility = View.GONE
-                editView = JournalEditor(this, site, note).also { content.addView(it) }
+                setHeader(if (note != null) "Запись дневника" else "Карточка объекта",
+                    action("Разделы") { editView?.showSections() }, true)
+                updateNavigationVisibility()
+                editView = JournalEditor(this, site, note).also { editor ->
+                    content.addView(editor)
+                    editor.restoreScroll(editorScroll)
+                }
+                editorScroll = 0
                 return
             }
             editorId = null
         }
-        nav.visibility = View.VISIBLE
+        updateNavigationVisibility()
         for (item in Tab.entries) {
-            val button = action("${item.symbol}  ${item.title}", item == tab, item.title) { switch(item) }
-            button.textSize = 12f
-            button.setPadding(0, 0, 0, 0)
-            button.isSelected = item == tab
-            nav.addView(button, LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(dp(2), 0, dp(2), 0) })
+            val button = navigationAction(item.title, item.icon, item == tab) { switch(item) }
+            nav.addView(button, LinearLayout.LayoutParams(0, -2, 1f))
         }
         when (tab) {
             Tab.MAP -> {
@@ -220,10 +245,14 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun updateNavigationVisibility() {
+        nav.visibility = if (editorId != null || drawMode != DrawMode.NONE || keyboardVisible) View.GONE else View.VISIBLE
+    }
+
     private fun setHeader(title: String, action: View?, back: Boolean = false) {
         val row = horizontal().apply { setPadding(dp(16), dp(8), dp(16), dp(8)) }
         if (back) row.addView(action("‹", description = "Назад") { closeEditor() }, dp(48), dp(48))
-        val name = label(title, if (back) 23f else 26f, Palette.pine, true)
+        val name = label(title, if (back) 19f else 24f, Palette.pine, true)
         if (android.os.Build.VERSION.SDK_INT >= 28) name.isAccessibilityHeading = true
         row.addView(name, LinearLayout.LayoutParams(0, -2, 1f).apply { if (back) leftMargin = dp(10) })
         if (action != null) row.addView(action)
@@ -268,17 +297,23 @@ class MainActivity : Activity() {
         mapActions = horizontal().apply { setPadding(dp(8), dp(4), dp(8), dp(8)) }
         val frame = FrameLayout(this).apply {
             addView(map, FrameLayout.LayoutParams(-1, -1))
-            val toolbar = vertical()
-            gpsButton = action("◎", description = "Моё местоположение") { requestLocation() }
-            val controls = listOf(
-                gpsButton,
-                action("+", description = "Приблизить") { map.zoomBy(1.0) },
-                action("−", description = "Отдалить") { map.zoomBy(-1.0) },
-                action("◉", description = "Посмотреть панораму улиц") { openPanorama(map.center) }
-            )
-            for (button in controls) toolbar.addView(button, LinearLayout.LayoutParams(dp(48), dp(48)).apply { bottomMargin = dp(6) })
-            addView(toolbar, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply {
-                topMargin = dp(13); rightMargin = dp(11)
+            val zoom = vertical()
+            for ((caption, delta) in listOf("+" to 1.0, "−" to -1.0)) {
+                zoom.addView(action(caption, description = if (delta > 0) "Приблизить" else "Отдалить") {
+                    map.zoomBy(delta)
+                }.apply { textSize = 22f }, LinearLayout.LayoutParams(dp(48), dp(48)).apply { bottomMargin = dp(4) })
+            }
+            addView(zoom, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply {
+                topMargin = dp(10)
+                marginEnd = dp(10)
+            })
+            val toolbar = horizontal()
+            toolbar.addView(action("Панорама") { openPanorama(map.center) })
+            val gpsButton = action("Моё место", primary = true) { requestLocation() }
+            toolbar.addView(gpsButton, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(6) })
+            addView(toolbar, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.END).apply {
+                bottomMargin = dp(32)
+                marginEnd = dp(10)
             })
         }
         mapPanel = vertical().apply {
@@ -320,11 +355,12 @@ class MainActivity : Activity() {
     }
 
     private fun updateControls() {
+        updateNavigationVisibility()
         updateMapStatus()
         mapActions.removeAllViews()
         fun control(text: String, primary: Boolean = false, click: () -> Unit) {
             val button = action(text, primary, click = click).apply {
-                textSize = 12f
+                textSize = 13f
                 setPadding(dp(3), 0, dp(3), 0)
             }
             mapActions.addView(button, LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(dp(2), 0, dp(2), 0) })
@@ -350,7 +386,7 @@ class MainActivity : Activity() {
             DrawMode.AREA, DrawMode.MOVE_AREA -> {
                 control("Отмена") { cancelDraw() }
                 control("Вершина") { addVertex(map.center) }
-                control("Назад") {
+                control("Отменить") {
                     if (vertices.isNotEmpty()) vertices.removeAt(vertices.lastIndex)
                     map.draft = vertices.toList()
                     updateControls()
@@ -422,24 +458,29 @@ class MainActivity : Activity() {
     }
 
     private fun saveGeometry(points: List<Coordinate>, fix: LocationFix? = null) {
-        val existing = geometrySite?.let { id -> store.sites().find { it.id == id } }
+        val existing = geometrySite?.let(store::site)
         if (existing != null) {
+            val updated = existing.copy(vertices = points, holes = emptyList(), accuracy = fix?.accuracy,
+                altitude = fix?.altitude, updated = System.currentTimeMillis())
+            if (!saveSiteGeometry(updated)) return
             resetDraw()
-            store.save(existing.copy(vertices = points, holes = emptyList(), accuracy = fix?.accuracy,
-                altitude = fix?.altitude, updated = System.currentTimeMillis()))
             openSite(existing.id)
             return
         }
         chooseType("Условный знак объекта") { type ->
-            resetDraw()
             val site = Site(title = type.title, type = type.id, vertices = points, accuracy = fix?.accuracy, altitude = fix?.altitude)
-            store.save(site)
-            openSite(site.id)
+            if (saveSiteGeometry(site)) {
+                resetDraw()
+                openSite(site.id)
+            }
         }
     }
 
+    private fun saveSiteGeometry(site: Site): Boolean = runCatching { store.save(site) }
+        .onFailure { message("Не удалось записать объект. Повторите сохранение") }.isSuccess
+
     internal fun editGeometry(site: Site) {
-        clearEditor(save = true)
+        if (!clearEditor(save = true)) return
         tab = Tab.MAP
         render()
         map.show(site)
@@ -448,7 +489,7 @@ class MainActivity : Activity() {
     }
 
     internal fun showOnMap(site: Site) {
-        clearEditor(save = true)
+        if (!clearEditor(save = true)) return
         tab = Tab.MAP
         filter = null
         render()
@@ -567,44 +608,92 @@ class MainActivity : Activity() {
         content.addView(ScrollView(this).apply { isFillViewport = true; addView(list) })
     }
 
+    private fun rememberCatalogPosition() {
+        catalogView?.let {
+            catalogIndex = it.firstVisiblePosition
+            catalogOffset = it.getChildAt(0)?.top ?: 0
+        }
+    }
+
+    private fun resetCatalogPosition() {
+        catalogView = null
+        catalogIndex = 0
+        catalogOffset = 0
+    }
+
     private fun showSites() {
-        val list = vertical().apply { setPadding(dp(16), dp(4), dp(16), dp(10)) }
-        val query = edit("Название, датировка, источник", search)
-        val controls = horizontal().apply {
-            addView(action(filter?.let { objectType(it).title } ?: "Все типы") { chooseFilter() })
-            if (filter != null) addView(action("Сбросить") { filter = null; render() })
+        val panel = vertical().apply { setPadding(dp(14), dp(5), dp(14), dp(8)) }
+        val query = edit("Поиск по названию и описанию", search)
+        val controls = horizontal()
+        controls.addView(action(filter?.let { objectType(it).title } ?: "Все типы") { chooseFilter() },
+            LinearLayout.LayoutParams(0, -2, 1f))
+        if (filter != null) controls.addView(action("Сбросить") {
+            filter = null
+            resetCatalogPosition()
+            render()
+        })
+        val count = label("", 14f, Palette.muted).apply {
+            setPadding(dp(3), dp(7), dp(3), dp(7))
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         }
-        val found = vertical()
-        fun populate() {
-            found.removeAllViews()
-            val data = store.sites().filter { site ->
-                (filter == null || site.type == filter) && listOf(site.title, objectType(site.type).title, site.period,
-                    site.culture, site.description, site.inventory, site.sources).any { it.contains(search, true) }
+        val results = ListView(this).apply {
+            divider = null
+            clipToPadding = false
+        }
+        catalogView = results
+        val emptyState = vertical()
+        val resultsPanel = FrameLayout(this).apply {
+            addView(results, FrameLayout.LayoutParams(-1, -1))
+            addView(emptyState, FrameLayout.LayoutParams(-1, -2))
+        }
+        val catalog = store.sites().filter { filter == null || it.type == filter }
+        var matches = catalog
+        val adapter = object : BaseAdapter() {
+            override fun getCount() = matches.size
+            override fun getItem(position: Int) = matches[position]
+            override fun getItemId(position: Int) = position.toLong()
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                return ((convertView as? CatalogRow) ?: CatalogRow(this@MainActivity)).apply {
+                    bind(getItem(position))
+                }
             }
-            if (data.isEmpty()) empty(found, "Объекты не найдены",
-                if (search.isBlank() && filter == null) "Поставьте точку на карте или обведите границы участка."
+        }
+        results.adapter = adapter
+        results.setOnItemClickListener { _, _, position, _ -> openSite(adapter.getItem(position).id) }
+        fun showMatches() {
+            val input = search.trim()
+            matches = if (input.isEmpty()) catalog else catalog.filter { site ->
+                listOf(site.title, objectType(site.type).title, site.period, site.culture,
+                    site.description, site.inventory, site.sources).any { it.contains(input, true) }
+            }
+            adapter.notifyDataSetChanged()
+            count.text = "Объекты · ${matches.size}"
+            emptyState.removeAllViews()
+            if (matches.isEmpty()) empty(emptyState, "Объекты не найдены",
+                if (input.isEmpty() && filter == null) "Поставьте точку на карте или обведите границы участка."
                 else "Измените поиск или фильтр по типу.")
-            for (site in data) {
-                val detail = listOfNotNull(objectType(site.type).title, site.period.ifBlank { null },
-                    if (site.area) areaLabel(areaSquareMeters(site.vertices)) else null).joinToString(" · ")
-                card(found, site.title, detail, SymbolView(this, objectType(site.type))) { openSite(site.id) }
-            }
         }
-        query.watch { search = it; populate() }
-        list.addView(query)
-        list.addSpace(8)
-        list.addView(controls)
-        list.addSpace(6)
-        list.addView(ScrollView(this).apply { isFillViewport = true; addView(found) }, LinearLayout.LayoutParams(-1, 0, 1f))
-        content.addView(list)
+        query.watch {
+            search = it
+            showMatches()
+            results.setSelection(0)
+        }
+        panel.addView(query, -1, -2)
+        panel.addSpace(6)
+        panel.addView(controls, -1, -2)
+        panel.addView(count)
+        panel.addView(resultsPanel, LinearLayout.LayoutParams(-1, 0, 1f))
+        content.addView(panel)
         root.requestFocus()
-        populate()
+        showMatches()
+        results.setSelectionFromTop(catalogIndex, catalogOffset)
     }
 
     private fun chooseFilter() {
         val names = arrayOf("Все типы") + objectTypes.map(ObjectType::title).toTypedArray()
         AlertDialog.Builder(this).setTitle("Фильтр каталога и карты").setItems(names) { _, choice ->
             filter = objectTypes.getOrNull(choice - 1)?.id
+            resetCatalogPosition()
             render()
         }.show()
     }
@@ -740,6 +829,7 @@ class MainActivity : Activity() {
     }
 
     internal fun openSite(id: String) {
+        if (!saveBeforeAction()) return
         if (editorId == null) previousTab = tab
         editorId = id
         editorIsNote = false
@@ -749,6 +839,7 @@ class MainActivity : Activity() {
     internal fun openRelatedNote(id: String) = openNote(id)
 
     private fun openNote(id: String) {
+        if (!saveBeforeAction()) return
         if (editorId == null) previousTab = tab
         editorId = id
         editorIsNote = true
@@ -756,35 +847,52 @@ class MainActivity : Activity() {
     }
 
     internal fun createNote(siteId: String?) {
-        editView?.flush()
+        if (!saveBeforeAction()) return
         val note = Note(title = "Полевое наблюдение", siteId = siteId)
-        store.save(note)
-        if (siteId != null) previousTab = Tab.NOTES
-        openNote(note.id)
+        runCatching { store.save(note) }.onSuccess {
+            if (siteId != null) previousTab = Tab.NOTES
+            openNote(note.id)
+        }.onFailure { message("Не удалось создать запись дневника") }
     }
 
-    private fun clearEditor(save: Boolean) {
-        if (save) editView?.flush()
+    private fun saveBeforeAction(): Boolean {
+        if (editView?.flush() != false) return true
+        message("Не удалось сохранить. Правки остались в карточке")
+        return false
+    }
+
+    private fun clearEditor(save: Boolean): Boolean {
+        if (save && !saveBeforeAction()) return false
+        editView?.stopSaving()
         editView = null
         editorId = null
         getSystemService(InputMethodManager::class.java)?.hideSoftInputFromWindow(root.windowToken, 0)
+        return true
     }
 
     internal fun closeEditor(save: Boolean = true) {
-        clearEditor(save)
+        if (!clearEditor(save)) {
+            AlertDialog.Builder(this).setTitle("Правки не сохранены")
+                .setMessage("Можно повторить запись или остаться в карточке.")
+                .setPositiveButton("Повторить") { _, _ -> closeEditor() }
+                .setNeutralButton("Выйти без записи") { _, _ -> closeEditor(save = false) }
+                .setNegativeButton("Остаться", null)
+                .show()
+            return
+        }
         tab = previousTab
         render()
     }
 
     internal fun pickAttachment(owner: String, note: Boolean, photoOnly: Boolean) {
-        editView?.flush()
+        if (!saveBeforeAction()) return
         pendingOwner = owner
         pendingIsNote = note
         pickDocument(ATTACH, if (photoOnly) "image/*" else "*/*")
     }
 
     internal fun capturePhoto(owner: String, note: Boolean) {
-        editView?.flush()
+        if (!saveBeforeAction()) return
         val id = newId()
         val photo = Attachment(id, "Фото ${shortDate()}.jpg", "image/jpeg")
         val uri = attachmentUri(this, photo, true)
@@ -875,9 +983,9 @@ class MainActivity : Activity() {
             BACKUP, GEOJSON -> {
                 if (resultCode != RESULT_OK || uri == null) return
                 withIo("Экспорт данных", {
-                    requireNotNull(contentResolver.openOutputStream(uri, "wt")).use {
-                        if (requestCode == BACKUP) store.exportBackup(it) else store.exportGeoJson(it)
-                    }
+                    val openOutput = { requireNotNull(contentResolver.openOutputStream(uri, "wt")) }
+                    if (requestCode == BACKUP) store.exportBackup(openOutput)
+                    else openOutput().use(store::exportGeoJson)
                 }) { message("Файл сохранён") }
             }
         }

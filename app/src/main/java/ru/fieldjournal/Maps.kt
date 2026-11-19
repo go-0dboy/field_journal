@@ -51,11 +51,27 @@ internal class MapTiles(context: Context) {
         settings.getString("longitude", "37.0")!!.toDouble()
     ) to settings.getString("zoom", "5.0")!!.toDouble()
 
+    private data class Package(val db: SQLiteDatabase, val info: OfflineInfo)
+    private val offlinePackages = mutableMapOf<MapLayer, Package>()
+    private val packageLock = Any()
+
     private fun file(layer: MapLayer) = File(folder, "${layer.name}.mbtiles")
 
-    fun info(layer: MapLayer): OfflineInfo? {
-        if (!file(layer).isFile) return null
-        return runCatching { open(file(layer)).use { readInfo(it) } }.getOrNull()
+    fun info(layer: MapLayer): OfflineInfo? = synchronized(packageLock) {
+        runCatching { offlinePackage(layer)?.info }.getOrNull()
+    }
+
+    private fun offlinePackage(layer: MapLayer): Package? {
+        offlinePackages[layer]?.let { return it }
+        val file = file(layer)
+        if (!file.isFile) return null
+        val db = open(file)
+        try {
+            return Package(db, readInfo(db)).also { offlinePackages[layer] = it }
+        } catch (e: Exception) {
+            db.close()
+            throw e
+        }
     }
 
     private fun open(file: File) = SQLiteDatabase.openDatabase(file.path, null, SQLiteDatabase.OPEN_READONLY or SQLiteDatabase.NO_LOCALIZED_COLLATORS)
@@ -106,7 +122,10 @@ internal class MapTiles(context: Context) {
                 }
                 result
             }
-            check(temp.renameTo(file(layer))) { "Не удалось установить офлайн-карту" }
+            synchronized(packageLock) {
+                offlinePackages.remove(layer)?.db?.close()
+                check(temp.renameTo(file(layer))) { "Не удалось установить офлайн-карту" }
+            }
             return info
         } finally {
             temp.delete()
@@ -121,8 +140,8 @@ internal class MapTiles(context: Context) {
         MapLayer.HYBRID -> "© Esri, Maxar, Earthstar Geographics, GIS User Community • Esri Reference"
     }
 
-    fun read(layer: MapLayer, offline: Boolean, urls: String, tile: Tile, overlay: Boolean, offlineRange: OfflineInfo?): Bitmap? {
-        if (offline) return if (overlay || offlineRange == null) null else readOffline(layer, tile, offlineRange)
+    fun read(layer: MapLayer, offline: Boolean, urls: String, tile: Tile, overlay: Boolean): Bitmap? {
+        if (offline) return if (overlay) null else readOffline(layer, tile)
         val worldImagery = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
         val labels = "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}"
         val template = when {
@@ -147,22 +166,23 @@ internal class MapTiles(context: Context) {
         }
     }
 
-    private fun readOffline(layer: MapLayer, tile: Tile, info: OfflineInfo): Bitmap? {
-        if (tile.z < info.minZoom) return null
-        return open(file(layer)).use { db ->
+    private fun readOffline(layer: MapLayer, tile: Tile): Bitmap? {
+        return synchronized(packageLock) {
+            val source = offlinePackage(layer) ?: return@synchronized null
+            val info = source.info
             for (z in min(tile.z, info.maxZoom) downTo max(info.minZoom, tile.z - 7)) {
                 val shift = tile.z - z
                 val x = tile.x shr shift
                 val tms = (1 shl z) - 1 - (tile.y shr shift)
-                val image = db.rawQuery(
+                val image = source.db.rawQuery(
                     "SELECT tile_data FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=? LIMIT 1",
                     arrayOf(z.toString(), x.toString(), tms.toString())
                 ).use { if (it.moveToFirst()) decode(it.getBlob(0)) else null } ?: continue
-                if (shift == 0) return@use image
+                if (shift == 0) return@synchronized image
                 val divisions = 1 shl shift
                 val left = tile.x % divisions * image.width / divisions
                 val top = tile.y % divisions * image.height / divisions
-                return@use Bitmap.createBitmap(image, left, top, max(1, image.width / divisions), max(1, image.height / divisions))
+                return@synchronized Bitmap.createBitmap(image, left, top, max(1, image.width / divisions), max(1, image.height / divisions))
             }
             null
         }
@@ -180,6 +200,11 @@ internal class MapTiles(context: Context) {
     }
 
     companion object {
+        private var instance: MapTiles? = null
+
+        @Synchronized fun get(context: Context) =
+            instance ?: MapTiles(context.applicationContext).also { instance = it }
+
         fun validTemplate(value: String): Boolean {
             if (value.isBlank()) return true
             val url = Uri.parse(value.replace("{x}", "0").replace("{y}", "0").replace("{z}", "0"))

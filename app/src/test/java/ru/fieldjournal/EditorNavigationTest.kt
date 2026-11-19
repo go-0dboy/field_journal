@@ -62,6 +62,7 @@ class EditorNavigationTest {
             val hint = root.text("Коснитесь места и нажмите «Установить»")
             val install = root.text("Установить")
             assertTrue(top(hint) + hint.height <= top(install))
+            assertTrue(top(hint) + hint.height <= top(root.action("Моё место")))
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(5))
             assertEquals(View.GONE, hint.visibility)
             root.text("Отмена").performClick()

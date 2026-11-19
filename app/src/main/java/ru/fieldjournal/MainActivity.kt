@@ -51,6 +51,7 @@ class MainActivity : Activity() {
     private lateinit var mapPanel: LinearLayout
     private lateinit var mapStatus: TextView
     private lateinit var mapActions: LinearLayout
+    private lateinit var mapLocationButton: View
     private val handler = Handler(Looper.getMainLooper())
     private val hideNotice = Runnable { notice.visibility = View.GONE }
     private var tab = Tab.MAP
@@ -269,7 +270,7 @@ class MainActivity : Activity() {
                 setHeader(if (draft.note != null) "Запись дневника" else "Карточка объекта",
                     action("✓", primary = true, description = "Сохранить и закрыть") {
                         closeEditor()
-                    }.apply { textSize = 14f; minWidth = dp(48) }, true)
+                    }.apply { textSize = 12f; minWidth = dp(48) }, true)
                 updateNavigationVisibility()
                 editView = JournalEditor(this, draft).also { editor ->
                     content.addView(editor)
@@ -383,8 +384,8 @@ class MainActivity : Activity() {
                 topMargin = dp(10)
                 marginEnd = dp(10)
             })
-            addView(locationAction { requestLocation() }, FrameLayout.LayoutParams(dp(48), dp(48),
-                Gravity.BOTTOM or Gravity.END).apply {
+            mapLocationButton = locationAction { requestLocation() }
+            addView(mapLocationButton, FrameLayout.LayoutParams(dp(48), dp(48), Gravity.BOTTOM or Gravity.END).apply {
                 bottomMargin = dp(32)
                 marginEnd = dp(10)
             })
@@ -1184,7 +1185,7 @@ class MainActivity : Activity() {
     private fun positionNotice() {
         if (notice.visibility != View.VISIBLE || screen.height == 0) return
         val anchor = when {
-            editorId == null && tab == Tab.MAP && mapActions.isShown -> mapActions
+            editorId == null && tab == Tab.MAP && mapLocationButton.isShown -> mapLocationButton
             nav.isShown -> nav
             else -> null
         }

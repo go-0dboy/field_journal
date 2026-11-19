@@ -93,7 +93,10 @@ class MapEditingTest {
             val selected = requireNotNull(map.pointPreview)
             assertNotEquals(map.center, selected)
             root.text("Координаты").performClick()
-            ShadowAlertDialog.getLatestAlertDialog().window!!.decorView.text("Скопировать").performClick()
+            val pointPrompt = ShadowAlertDialog.getLatestAlertDialog().window!!.decorView
+            layout(pointPrompt)
+            assertTrue(pointPrompt.text("Отмена").left > pointPrompt.text("Скопировать").left)
+            pointPrompt.text("Скопировать").performClick()
             shadowOf(Looper.getMainLooper()).idle()
             assertEquals(selected.display(), clipboard.primaryClip?.getItemAt(0)?.text.toString())
             root.text("Установить").performClick()
@@ -101,6 +104,28 @@ class MapEditingTest {
             assertTrue(activity.store.sites().none { it.id !in savedIds })
             confirmSave(activity)
             assertEquals(selected, activity.store.sites().single { it.id !in savedIds }.anchor)
+        } finally {
+            controller.pause().stop().destroy()
+        }
+    }
+
+    @Test fun layerSheetKeepsTheSelectedBaseAndOffersOfflineReferenceImport() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        try {
+            val activity = controller.get()
+            val root = activity.window.decorView
+            val tiles = MapTiles.get(activity)
+            root.text("Слои").performClick()
+            val sheet = requireNotNull(ShadowAlertDialog.getLatestAlertDialog().window).decorView
+            sheet.text("Гибрид").performClick()
+            assertEquals(MapLayer.HYBRID, tiles.layer)
+            assertTrue(sheet.text("Гибрид").isSelected)
+            sheet.text("Офлайн-режим").performClick()
+            assertTrue(tiles.offline)
+            assertFalse(sheet.text("Современные дороги и подписи").isEnabled)
+            sheet.text("Подключить подписи").performClick()
+            val request = shadowOf(activity).nextStartedActivityForResult
+            assertEquals(android.content.Intent.ACTION_OPEN_DOCUMENT, request.intent.action)
         } finally {
             controller.pause().stop().destroy()
         }

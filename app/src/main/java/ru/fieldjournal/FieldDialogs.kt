@@ -41,19 +41,20 @@ internal fun Context.fieldPrompt(
             }, -1, -2)
         }
         addSpace(16)
-        addView(action(primary.title, primary = true) {
+        val main = action(primary.title, primary = true) {
             dialog.dismiss()
             primary.run()
-        }, -1, -2)
-        addSpace(6)
+        }
+        val left = if (secondary == null) main else {
+            addView(main, -1, -2)
+            addSpace(6)
+            action(secondary.title) {
+                dialog.dismiss()
+                secondary.run()
+            }.apply { if (destructive) setTextColor(Palette.rust) }
+        }
         addView(horizontal().apply {
-            if (secondary != null) {
-                addView(action(secondary.title) {
-                    dialog.dismiss()
-                    secondary.run()
-                }.apply { if (destructive) setTextColor(Palette.rust) },
-                    LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(6) })
-            }
+            addView(left, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(6) })
             addView(action("Отмена") { dialog.cancel() }, LinearLayout.LayoutParams(0, -2, 1f))
         }, -1, -2)
     }

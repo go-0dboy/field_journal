@@ -46,8 +46,8 @@ jobs:
       - name: Restore preview signing key
         uses: actions/cache@v4
         with:
-          path: ~/.android/debug.keystore
-          key: field-journal-preview-key-v1
+          path: ${{ runner.temp }}/field-journal-preview.keystore
+          key: field-journal-preview-key-v2
       - name: Configure repository signing key
         env:
           KEY_BASE64: ${{ secrets.FIELD_JOURNAL_KEYSTORE_BASE64 }}
@@ -56,6 +56,15 @@ jobs:
             umask 077
             printf '%s' "$KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/field-journal.jks"
             printf 'FIELD_JOURNAL_KEYSTORE=%s/field-journal.jks\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          else
+            key="$RUNNER_TEMP/field-journal-preview.keystore"
+            if [ ! -f "$key" ]; then
+              umask 077
+              keytool -genkeypair -keystore "$key" -storetype JKS -storepass android -keypass android \
+                -alias androiddebugkey -dname 'CN=Android Debug,O=Android,C=US' \
+                -keyalg RSA -keysize 2048 -validity 10000 -noprompt
+            fi
+            printf 'FIELD_JOURNAL_KEYSTORE=%s\n' "$key" >> "$GITHUB_ENV"
           fi
       - name: Test and assemble
         env:

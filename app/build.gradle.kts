@@ -32,6 +32,10 @@ android {
         isIncludeAndroidResources = true
         all {
             it.systemProperty("robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2")
+            System.getenv("ROBOLECTRIC_SDK_DIR")?.takeIf(String::isNotBlank)?.let { directory ->
+                it.systemProperty("robolectric.dependency.dir", directory)
+                it.systemProperty("robolectric.offline", true)
+            }
             for (property in listOf("https.proxyHost", "https.proxyPort", "http.proxyHost", "http.proxyPort")) {
                 System.getProperty(property)?.let { value -> it.systemProperty(property, value) }
             }

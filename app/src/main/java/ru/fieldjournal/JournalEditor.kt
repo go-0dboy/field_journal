@@ -33,18 +33,15 @@ internal class JournalEditor(
     private var note: Note?
 ) : FrameLayout(activity) {
     private val body = activity.vertical()
-    private val sections = linkedMapOf<String, View>()
     private val scroll = ScrollView(activity).apply { isFillViewport = true; addView(body) }
     private val inputs = mutableMapOf<String, EditText>()
     private val handler = Handler(Looper.getMainLooper())
-    private val saveLater = Runnable { flush() }
-    private val storageStatus = activity.label("Сохранено", 13f, Palette.muted).apply {
-        accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
-    }
+    private val saveLater = Runnable { flush(showFeedback = true) }
     private lateinit var mediaList: LinearLayout
     private lateinit var refreshDraftControls: () -> Unit
     private val owner get() = site?.id ?: requireNotNull(note).id
     private var dirty = false
+    val hasUnsavedChanges get() = dirty
     private var type = site?.type
     private var linkedSite = note?.siteId
     private var timestamp = note?.created
@@ -62,19 +59,13 @@ internal class JournalEditor(
             activity.confirm("Удалить запись?", "Запись будет удалена из локальной базы.") {
                 runCatching {
                     if (site != null) activity.store.deleteSite(owner) else activity.store.deleteNote(owner)
-                }.onSuccess { activity.closeEditor(save = false) }
-                    .onFailure { activity.message("Не удалось удалить запись") }
+                }.onSuccess {
+                    activity.closeEditor(save = false)
+                    activity.message(if (site != null) "Объект удалён" else "Запись удалена")
+                }.onFailure { activity.message("Не удалось удалить запись") }
             }
         }.apply { setTextColor(Palette.rust) }, -1, -2)
-        addView(activity.vertical().apply {
-            addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
-            addView(activity.horizontal().apply {
-                background = activity.panel(Palette.white, 0, Palette.border)
-                setPadding(activity.dp(14), activity.dp(5), activity.dp(14), activity.dp(5))
-                addView(storageStatus, LinearLayout.LayoutParams(0, -2, 1f))
-                addView(activity.action("Готово", true, "Сохранить и закрыть") { activity.closeEditor() })
-            }, -1, -2)
-        }, LayoutParams(-1, -1))
+        addView(scroll, LayoutParams(-1, -1))
         body.requestFocus()
     }
 
@@ -83,16 +74,8 @@ internal class JournalEditor(
         val heading = activity.label(title, 19f, Palette.pine, true).apply {
             if (android.os.Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true
         }
-        sections[title] = heading
         body.addView(heading)
         body.addSpace(7)
-    }
-
-    fun showSections() {
-        val names = sections.keys.toTypedArray()
-        AlertDialog.Builder(activity).setTitle("Разделы карточки").setItems(names) { _, index ->
-            scroll.smoothScrollTo(0, requireNotNull(sections[names[index]]).top)
-        }.setPositiveButton("Отмена", null).show()
     }
 
     fun scrollPosition() = scroll.scrollY
@@ -316,7 +299,8 @@ internal class JournalEditor(
                     attachments = attachments.filterNot { it.id == attachment.id }
                     showMedia()
                     changed()
-                    flush()
+                    if (flush()) activity.message("Вложение удалено")
+                    else activity.message("Не удалось сохранить изменения")
                 }
             }, activity.dp(48), -2)
             mediaList.addView(row, -1, -2)
@@ -340,15 +324,13 @@ internal class JournalEditor(
 
     private fun changed() {
         dirty = true
-        storageStatus.text = "Сохранение…"
-        storageStatus.setTextColor(Palette.muted)
         handler.removeCallbacks(saveLater)
         handler.postDelayed(saveLater, 650)
     }
 
     private fun text(key: String) = inputs[key]?.text?.toString().orEmpty()
 
-    fun flush(): Boolean {
+    fun flush(showFeedback: Boolean = false): Boolean {
         if (!dirty) return true
         handler.removeCallbacks(saveLater)
         val now = System.currentTimeMillis()
@@ -372,12 +354,10 @@ internal class JournalEditor(
         }.onSuccess {
             dirty = false
             removedAttachments.clear()
-            storageStatus.text = "Сохранено"
-            storageStatus.setTextColor(Palette.muted)
+            if (showFeedback) activity.message("Изменения сохранены")
         }.onFailure {
             android.util.Log.w("FieldJournal", "Could not save edited record", it)
-            storageStatus.text = "Ошибка записи"
-            storageStatus.setTextColor(Palette.rust)
+            if (showFeedback) activity.message("Не удалось сохранить. Правки остались в карточке")
         }.isSuccess
     }
 }

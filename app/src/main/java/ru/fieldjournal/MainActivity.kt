@@ -27,7 +27,6 @@ import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import android.widget.Toast
 import java.io.File
 import java.util.concurrent.Executors
 import kotlin.math.roundToInt
@@ -44,6 +43,7 @@ class MainActivity : Activity() {
     private lateinit var gps: FieldLocation
     private lateinit var root: LinearLayout
     private lateinit var header: LinearLayout
+    private lateinit var notice: TextView
     private lateinit var content: FrameLayout
     private lateinit var nav: LinearLayout
     private lateinit var map: FieldMap
@@ -51,10 +51,13 @@ class MainActivity : Activity() {
     private lateinit var mapStatus: TextView
     private lateinit var mapActions: LinearLayout
     private val handler = Handler(Looper.getMainLooper())
+    private val hideNotice = Runnable { notice.visibility = View.GONE }
     private var tab = Tab.MAP
     private var previousTab = Tab.MAP
     private var editorId: String? = null
     private var editorIsNote = false
+    private var noteOriginId: String? = null
+    private var noteOriginScroll = 0
     private var editView: JournalEditor? = null
     private var drawMode = DrawMode.NONE
     private var geometrySite: String? = null
@@ -88,6 +91,8 @@ class MainActivity : Activity() {
             previousTab = Tab.valueOf(it.getString("previous", tab.name))
             editorId = it.getString("editor")
             editorIsNote = it.getBoolean("isNote")
+            noteOriginId = it.getString("noteOriginId")
+            noteOriginScroll = it.getInt("noteOriginScroll")
             drawMode = DrawMode.valueOf(it.getString("draw", DrawMode.NONE.name))
             geometrySite = it.getString("geometrySite")
             it.getDoubleArray("selectedPoint")?.let { point -> selectedPoint = Coordinate(point[0], point[1]) }
@@ -111,9 +116,18 @@ class MainActivity : Activity() {
             isFocusableInTouchMode = true
         }
         header = vertical()
+        notice = label("", 14f, Palette.white, true).apply {
+            visibility = View.GONE
+            background = panel(Palette.pine, 12)
+            setPadding(dp(12), dp(9), dp(12), dp(9))
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+        }
         content = FrameLayout(this)
         nav = horizontal().apply { setPadding(dp(9), dp(7), dp(9), dp(7)); background = panel(Palette.white, 0, Palette.border) }
         root.addView(header, -1, -2)
+        root.addView(notice, LinearLayout.LayoutParams(-1, -2).apply {
+            setMargins(dp(16), 0, dp(16), dp(6))
+        })
         root.addView(content, LinearLayout.LayoutParams(-1, 0, 1f))
         root.addView(nav, -1, -2)
         root.setOnApplyWindowInsetsListener { view, insets ->
@@ -151,6 +165,8 @@ class MainActivity : Activity() {
         out.putString("previous", previousTab.name)
         out.putString("editor", editorId)
         out.putBoolean("isNote", editorIsNote)
+        out.putString("noteOriginId", noteOriginId)
+        out.putInt("noteOriginScroll", noteOriginScroll)
         out.putString("draw", drawMode.name)
         out.putString("geometrySite", geometrySite)
         selectedPoint?.let { out.putDoubleArray("selectedPoint", doubleArrayOf(it.latitude, it.longitude)) }
@@ -211,7 +227,9 @@ class MainActivity : Activity() {
             val note = if (editorIsNote) store.note(id) else null
             if (site != null || note != null) {
                 setHeader(if (note != null) "Запись дневника" else "Карточка объекта",
-                    action("Разделы") { editView?.showSections() }, true)
+                    action("✓", primary = true, description = "Сохранить и закрыть") {
+                        closeEditor(announce = true)
+                    }.apply { textSize = 20f; minWidth = dp(48) }, true)
                 updateNavigationVisibility()
                 editView = JournalEditor(this, site, note).also { editor ->
                     content.addView(editor)
@@ -220,7 +238,11 @@ class MainActivity : Activity() {
                 editorScroll = 0
                 return
             }
-            editorId = null
+            restoreEditorOrigin()
+            if (editorId != null) {
+                render()
+                return
+            }
         }
         updateNavigationVisibility()
         for (item in Tab.entries) {
@@ -468,6 +490,7 @@ class MainActivity : Activity() {
     }
 
     private fun resetDraw() {
+        dismissNotice()
         drawMode = DrawMode.NONE
         vertices.clear()
         geometrySite = null
@@ -492,6 +515,7 @@ class MainActivity : Activity() {
             if (!saveSiteGeometry(updated)) return
             resetDraw()
             openSite(existing.id)
+            message("Положение объекта сохранено")
             return
         }
         chooseType("Условный знак объекта") { type ->
@@ -499,6 +523,7 @@ class MainActivity : Activity() {
             if (saveSiteGeometry(site)) {
                 resetDraw()
                 openSite(site.id)
+                message("Объект сохранён")
             }
         }
     }
@@ -846,6 +871,8 @@ class MainActivity : Activity() {
     internal fun openSite(id: String) {
         if (!saveBeforeAction()) return
         if (editorId == null) previousTab = tab
+        noteOriginId = null
+        noteOriginScroll = 0
         editorId = id
         editorIsNote = false
         render()
@@ -856,6 +883,8 @@ class MainActivity : Activity() {
     private fun openNote(id: String) {
         if (!saveBeforeAction()) return
         if (editorId == null) previousTab = tab
+        noteOriginId = editorId?.takeUnless { editorIsNote }
+        noteOriginScroll = if (noteOriginId != null) editView?.scrollPosition() ?: 0 else 0
         editorId = id
         editorIsNote = true
         render()
@@ -865,8 +894,8 @@ class MainActivity : Activity() {
         if (!saveBeforeAction()) return
         val note = Note(title = "Полевое наблюдение", siteId = siteId)
         runCatching { store.save(note) }.onSuccess {
-            if (siteId != null) previousTab = Tab.NOTES
             openNote(note.id)
+            message("Запись создана")
         }.onFailure { message("Не удалось создать запись дневника") }
     }
 
@@ -885,18 +914,30 @@ class MainActivity : Activity() {
         return true
     }
 
-    internal fun closeEditor(save: Boolean = true) {
+    internal fun closeEditor(save: Boolean = true, announce: Boolean = false) {
+        val showSaved = save && (announce || editView?.hasUnsavedChanges == true)
         if (!clearEditor(save)) {
             AlertDialog.Builder(this).setTitle("Правки не сохранены")
                 .setMessage("Можно повторить запись или остаться в карточке.")
-                .setNegativeButton("Повторить") { _, _ -> closeEditor() }
+                .setNegativeButton("Повторить") { _, _ -> closeEditor(announce = announce) }
                 .setNeutralButton("Выйти без записи") { _, _ -> closeEditor(save = false) }
                 .setPositiveButton("Остаться", null)
                 .show()
             return
         }
-        tab = previousTab
+        dismissNotice()
+        restoreEditorOrigin()
         render()
+        if (showSaved) message("Изменения сохранены")
+    }
+
+    private fun restoreEditorOrigin() {
+        editorId = noteOriginId?.takeIf { store.site(it) != null }
+        editorIsNote = false
+        editorScroll = if (editorId != null) noteOriginScroll else 0
+        noteOriginId = null
+        noteOriginScroll = 0
+        tab = previousTab
     }
 
     internal fun pickAttachment(owner: String, note: Boolean, photoOnly: Boolean) {
@@ -969,6 +1010,7 @@ class MainActivity : Activity() {
                     record
                 }) { record ->
                     if (editorId == owner && editorIsNote == note) editView?.showSavedAttachment(record)
+                    message("Вложение добавлено")
                 }
             }
             MBTILES -> {
@@ -977,7 +1019,10 @@ class MainActivity : Activity() {
                 if (resultCode != RESULT_OK || uri == null || layer == null) return
                 withIo("Установка офлайн-карты", {
                     requireNotNull(contentResolver.openInputStream(uri)).use { tiles.install(layer, it) }
-                }) { activateMap(layer, it) }
+                }) {
+                    activateMap(layer, it)
+                    message("Офлайн-карта установлена")
+                }
             }
             IMPORT -> {
                 if (resultCode != RESULT_OK || uri == null) return
@@ -1028,6 +1073,7 @@ class MainActivity : Activity() {
     private fun addMedia(id: String, note: Boolean, record: Attachment) {
         runCatching { store.appendAttachment(id, note, record) }.onSuccess {
             if (editorId == id && editorIsNote == note) editView?.showSavedAttachment(record)
+            message("Снимок добавлен")
         }.onFailure {
             store.attachmentFile(record.id).delete()
             message("Не удалось сохранить снимок: ${it.message.orEmpty()}")
@@ -1056,7 +1102,15 @@ class MainActivity : Activity() {
     }
 
     internal fun message(text: String) {
-        Toast.makeText(this, text, Toast.LENGTH_SHORT).show()
+        handler.removeCallbacks(hideNotice)
+        notice.text = text
+        notice.visibility = View.VISIBLE
+        handler.postDelayed(hideNotice, 4500)
+    }
+
+    private fun dismissNotice() {
+        handler.removeCallbacks(hideNotice)
+        hideNotice.run()
     }
 
     companion object {

@@ -73,18 +73,25 @@ class StoreSmokeTest {
             val input = requireNotNull(titleInput(activity.window.decorView))
             input.setText("Исправленное название")
             activity.closeEditor()
+            acceptSave()
             assertEquals("Исправленное название", titleInput(activity.window.decorView)?.text.toString())
             assertEquals(original.title, activity.store.site(original.id)?.title)
-            requireNotNull(org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog()).dismiss()
             controller.recreate()
             assertEquals("Исправленное название", titleInput(controller.get().window.decorView)?.text.toString())
         } finally {
             controller.get().store.writableDatabase.execSQL("DROP TRIGGER refuse_site")
         }
         controller.get().closeEditor()
+        acceptSave()
         assertEquals("Исправленное название", controller.get().store.site(original.id)?.title)
         assertNull(titleInput(controller.get().window.decorView))
         controller.pause().stop().destroy()
+    }
+
+    private fun acceptSave() {
+        org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog()
+            .getButton(android.app.AlertDialog.BUTTON_NEGATIVE).performClick()
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
     }
 
     @Test @org.robolectric.annotation.GraphicsMode(org.robolectric.annotation.GraphicsMode.Mode.NATIVE)

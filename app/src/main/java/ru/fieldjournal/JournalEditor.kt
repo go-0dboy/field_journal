@@ -3,8 +3,6 @@ package ru.fieldjournal
 import android.app.AlertDialog
 import android.app.DatePickerDialog
 import android.content.DialogInterface
-import android.os.Handler
-import android.os.Looper
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.View
@@ -18,49 +16,78 @@ import java.time.Instant
 import java.time.ZoneId
 
 internal data class EditorDraft(
-    val owner: String,
-    val inputs: Map<String, String>,
-    val type: String?,
-    val linkedSite: String?,
-    val timestamp: Long?,
-    val removed: Set<String>
-)
+    val site: Site? = null,
+    val note: Note? = null,
+    val isNew: Boolean = false,
+    val dirty: Boolean = isNew,
+    val removed: Set<String> = emptySet(),
+    val staged: Set<String> = emptySet()
+) {
+    init {
+        require((site == null) != (note == null))
+    }
+
+    val id get() = site?.id ?: requireNotNull(note).id
+
+    fun json() = org.json.JSONObject().put("site", site?.feature()).put("note", note?.json())
+        .put("new", isNew).put("dirty", dirty)
+        .put("removed", org.json.JSONArray(removed)).put("staged", org.json.JSONArray(staged))
+
+    companion object {
+        fun read(value: org.json.JSONObject): EditorDraft {
+            fun ids(key: String): Set<String> {
+                val array = value.getJSONArray(key)
+                return (0 until array.length()).map { array.getString(it) }.toSet()
+            }
+            return EditorDraft(
+                site = value.optJSONObject("site")?.let {
+                    Site.read(it, withAttachments = true, validate = false).copy(title = it.getJSONObject("properties").getString("title"))
+                },
+                note = value.optJSONObject("note")?.let(Note::read),
+                isNew = value.getBoolean("new"),
+                dirty = value.getBoolean("dirty"),
+                removed = ids("removed"),
+                staged = ids("staged")
+            )
+        }
+    }
+}
 
 @android.annotation.SuppressLint("ViewConstructor")
 internal class JournalEditor(
     private val activity: MainActivity,
-    private var site: Site?,
-    private var note: Note?
+    private val draft: EditorDraft
 ) : FrameLayout(activity) {
     private val body = activity.vertical()
     private val scroll = ScrollView(activity).apply { isFillViewport = true; addView(body) }
     private val inputs = mutableMapOf<String, EditText>()
-    private val handler = Handler(Looper.getMainLooper())
-    private val saveLater = Runnable { flush(showFeedback = true) }
+    private val site = draft.site
+    private val note = draft.note
     private lateinit var mediaList: LinearLayout
-    private lateinit var refreshDraftControls: () -> Unit
-    private val owner get() = site?.id ?: requireNotNull(note).id
-    private var dirty = false
-    val hasUnsavedChanges get() = dirty
+    private val owner get() = draft.id
+    val isNew get() = draft.isNew
+    var hasUnsavedChanges = draft.dirty
+        private set
     private var type = site?.type
     private var linkedSite = note?.siteId
     private var timestamp = note?.created
     private var attachments = site?.attachments ?: note?.attachments.orEmpty()
-    private val removedAttachments = mutableSetOf<String>()
+    private val removedAttachments = draft.removed.toMutableSet()
+    private val stagedAttachments = draft.staged.toMutableSet()
 
     init {
         body.setPadding(activity.dp(16), activity.dp(10), activity.dp(16), activity.dp(20))
         body.isFocusableInTouchMode = true
         site?.let(::buildSite)
         note?.let(::buildNote)
-        if (site != null) addRelatedNotes()
+        if (site != null && !isNew) addRelatedNotes()
         body.addSpace(15)
-        body.addView(activity.action(if (site != null) "Удалить объект" else "Удалить запись") {
+        if (!isNew) body.addView(activity.action(if (site != null) "Удалить объект" else "Удалить запись") {
             activity.confirm("Удалить запись?", "Запись будет удалена из локальной базы.") {
                 runCatching {
                     if (site != null) activity.store.deleteSite(owner) else activity.store.deleteNote(owner)
                 }.onSuccess {
-                    activity.closeEditor(save = false)
+                    activity.closeDeletedEditor()
                     activity.message(if (site != null) "Объект удалён" else "Запись удалена")
                 }.onFailure { activity.message("Не удалось удалить запись") }
             }
@@ -82,26 +109,6 @@ internal class JournalEditor(
 
     fun restoreScroll(position: Int) {
         if (position > 0) scroll.post { scroll.scrollTo(0, position) }
-    }
-
-    fun unsavedDraft(): EditorDraft? = if (dirty) EditorDraft(owner, inputs.mapValues { it.value.text.toString() },
-        type, linkedSite, timestamp, removedAttachments.toSet()) else null
-
-    fun restoreDraft(draft: EditorDraft) {
-        if (draft.owner != owner) return
-        type = draft.type
-        linkedSite = draft.linkedSite
-        timestamp = draft.timestamp
-        removedAttachments.addAll(draft.removed)
-        attachments = attachments.filterNot { it.id in removedAttachments }
-        draft.inputs.forEach { (key, value) -> inputs[key]?.setText(value) }
-        showMedia()
-        refreshDraftControls()
-        changed()
-    }
-
-    fun stopSaving() {
-        handler.removeCallbacks(saveLater)
     }
 
     private fun field(key: String, label: String, value: String, lines: Int = 1) {
@@ -136,7 +143,6 @@ internal class JournalEditor(
             }, LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = activity.dp(8) })
         }
         typeControl()
-        refreshDraftControls = ::typeControl
         info.addView(typeRow, -1, -2)
         info.addSpace(8)
         val details = buildList {
@@ -198,10 +204,6 @@ internal class JournalEditor(
         }
         val link = activity.action(linkTitle()) { }.apply {
             setOnClickListener { chooseSite(this) }
-        }
-        refreshDraftControls = {
-            time.text = dateLabel(requireNotNull(timestamp))
-            link.text = linkTitle()
         }
         row.addView(time, -1, -2)
         row.addSpace(6)
@@ -299,8 +301,7 @@ internal class JournalEditor(
                     attachments = attachments.filterNot { it.id == attachment.id }
                     showMedia()
                     changed()
-                    if (flush()) activity.message("Вложение удалено")
-                    else activity.message("Не удалось сохранить изменения")
+                    activity.message("Вложение убрано из черновика")
                 }
             }, activity.dp(48), -2)
             mediaList.addView(row, -1, -2)
@@ -317,49 +318,60 @@ internal class JournalEditor(
         body.addView(activity.action("+ Запись об объекте", true) { activity.createNote(owner) }, -1, -2)
     }
 
-    fun showSavedAttachment(record: Attachment) {
-        attachments = (attachments + record).distinctBy(Attachment::id)
+    fun stageAttachment(record: Attachment) {
+        attachments = attachments + record
+        stagedAttachments.add(record.id)
         showMedia()
+        changed()
     }
 
     private fun changed() {
-        dirty = true
-        handler.removeCallbacks(saveLater)
-        handler.postDelayed(saveLater, 650)
+        hasUnsavedChanges = true
     }
 
     private fun text(key: String) = inputs[key]?.text?.toString().orEmpty()
 
-    fun flush(showFeedback: Boolean = false): Boolean {
-        if (!dirty) return true
-        handler.removeCallbacks(saveLater)
+    fun snapshot() = EditorDraft(
+        site = site?.let {
+            it.copy(title = text("title"), type = type ?: it.type, description = text("description"),
+                period = text("period"), culture = text("culture"), condition = text("condition"),
+                inventory = text("inventory"), author = text("author"), confidence = text("confidence"),
+                context = text("context"), sources = text("sources"), attachments = attachments)
+        },
+        note = note?.let {
+            it.copy(title = text("title"), body = text("body"), author = text("author"), weather = text("weather"),
+                siteId = linkedSite, created = timestamp ?: it.created, attachments = attachments)
+        },
+        isNew = isNew, dirty = hasUnsavedChanges, removed = removedAttachments.toSet(), staged = stagedAttachments.toSet()
+    )
+
+    fun saveConfirmed(): Boolean {
+        val state = snapshot()
         val now = System.currentTimeMillis()
         return runCatching {
-            site?.let {
-                val updated = it.copy(title = text("title").ifBlank { "Объект без названия" },
-                    type = type ?: it.type, description = text("description"), period = text("period"),
-                    culture = text("culture"), condition = text("condition"), inventory = text("inventory"),
-                    author = text("author"), confidence = text("confidence"), context = text("context"),
-                    sources = text("sources"), attachments = attachments, updated = now)
-                activity.store.save(updated, removedAttachments)
-                site = updated
+            state.site?.let {
+                activity.store.save(it.copy(title = it.title.ifBlank { "Объект без названия" }, updated = now), state.removed)
             }
-            note?.let {
-                val updated = it.copy(title = text("title").ifBlank { "Полевое наблюдение" },
-                    body = text("body"), author = text("author"), weather = text("weather"), siteId = linkedSite,
-                    attachments = attachments, created = timestamp ?: it.created, updated = now)
-                activity.store.save(updated, removedAttachments)
-                note = updated
+            state.note?.let {
+                activity.store.save(it.copy(title = it.title.ifBlank { "Полевое наблюдение" }, updated = now), state.removed)
             }
         }.onSuccess {
-            dirty = false
+            val kept = attachments.map(Attachment::id).toSet()
+            (stagedAttachments - kept).forEach { activity.store.attachmentFile(it).delete() }
+            stagedAttachments.clear()
             removedAttachments.clear()
-            if (showFeedback) activity.message("Изменения сохранены")
+            hasUnsavedChanges = false
         }.onFailure {
             android.util.Log.w("FieldJournal", "Could not save edited record", it)
-            if (showFeedback) activity.message("Не удалось сохранить. Правки остались в карточке")
+            activity.message("Не удалось сохранить. Правки остались в карточке")
         }.isSuccess
     }
+
+    fun discardDraft() {
+        stagedAttachments.forEach { activity.store.attachmentFile(it).delete() }
+        stagedAttachments.clear()
+    }
+
 }
 
 internal fun EditText.watch(onChange: (String) -> Unit) {

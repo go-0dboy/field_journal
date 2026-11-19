@@ -51,11 +51,20 @@ class MapEditingTest {
             assertNull(polygonError(map.draft))
             root.text("Готово").performClick()
             chooseFirstType()
+            assertTrue(activity.store.sites().none { it.id !in savedIds })
+            confirmSave(activity)
             val saved = activity.store.sites().single { it.id !in savedIds }
             assertEquals(3, saved.vertices.size)
-            activity.closeEditor()
+            activity.openSite(saved.id)
             activity.editGeometry(saved)
             assertEquals(3, map.draft.size)
+            val first = saved.vertices.first()
+            val moved = Coordinate(first.latitude - 0.000001, first.longitude)
+            map.onVertexMove?.invoke(0, moved)
+            root.text("Готово").performClick()
+            assertEquals(saved.vertices, activity.store.site(saved.id)?.vertices)
+            confirmSave(activity)
+            assertEquals(moved, activity.store.site(saved.id)?.vertices?.first())
         } finally {
             controller.pause().stop().destroy()
         }
@@ -87,10 +96,20 @@ class MapEditingTest {
             assertEquals(selected.display(), clipboard.primaryClip?.getItemAt(0)?.text.toString())
             root.text("Установить").performClick()
             chooseFirstType()
+            assertTrue(activity.store.sites().none { it.id !in savedIds })
+            confirmSave(activity)
             assertEquals(selected, activity.store.sites().single { it.id !in savedIds }.anchor)
         } finally {
             controller.pause().stop().destroy()
         }
+    }
+
+    private fun confirmSave(activity: MainActivity) {
+        activity.closeEditor()
+        val dialog = ShadowAlertDialog.getLatestAlertDialog()
+        assertEquals("Сохранить", dialog.getButton(AlertDialog.BUTTON_NEGATIVE).text.toString())
+        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).performClick()
+        shadowOf(Looper.getMainLooper()).idle()
     }
 
     private fun chooseFirstType() {

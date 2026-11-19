@@ -44,6 +44,7 @@ class MainActivity : Activity() {
     private lateinit var root: LinearLayout
     private lateinit var header: LinearLayout
     private lateinit var notice: TextView
+    private lateinit var screen: FrameLayout
     private lateinit var content: FrameLayout
     private lateinit var nav: LinearLayout
     private lateinit var map: FieldMap
@@ -59,6 +60,10 @@ class MainActivity : Activity() {
     private var noteOriginId: String? = null
     private var noteOriginScroll = 0
     private var editView: JournalEditor? = null
+    private var draftToOpen: EditorDraft? = null
+    private var geometryDraft: EditorDraft? = null
+    private var draftToken = newId()
+    private val draftFile get() = android.util.AtomicFile(File(cacheDir, "editor-$draftToken.json"))
     private var drawMode = DrawMode.NONE
     private var geometrySite: String? = null
     private var selectedPoint: Coordinate? = null
@@ -94,6 +99,14 @@ class MainActivity : Activity() {
             noteOriginId = it.getString("noteOriginId")
             noteOriginScroll = it.getInt("noteOriginScroll")
             drawMode = DrawMode.valueOf(it.getString("draw", DrawMode.NONE.name))
+            it.getString("draftToken")?.takeIf(attachmentId::matches)?.let { token ->
+                draftToken = token
+                runCatching { EditorDraft.read(org.json.JSONObject(draftFile.readFully().toString(Charsets.UTF_8))) }
+                    .onSuccess { draft ->
+                        if (editorId == draft.id) draftToOpen = draft
+                        else if (drawMode == DrawMode.MOVE_POINT || drawMode == DrawMode.MOVE_AREA) geometryDraft = draft
+                    }
+            }
             geometrySite = it.getString("geometrySite")
             it.getDoubleArray("selectedPoint")?.let { point -> selectedPoint = Coordinate(point[0], point[1]) }
             it.getDoubleArray("vertices")?.toList()?.chunked(2)?.forEach { vertex ->
@@ -116,18 +129,15 @@ class MainActivity : Activity() {
             isFocusableInTouchMode = true
         }
         header = vertical()
-        notice = label("", 14f, Palette.white, true).apply {
+        notice = label("", 14f, android.graphics.Color.WHITE).apply {
             visibility = View.GONE
-            background = panel(Palette.pine, 12)
-            setPadding(dp(12), dp(9), dp(12), dp(9))
+            background = panel(0xee27312e.toInt(), 20)
+            setPadding(dp(16), dp(10), dp(16), dp(10))
             accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         }
         content = FrameLayout(this)
         nav = horizontal().apply { setPadding(dp(9), dp(7), dp(9), dp(7)); background = panel(Palette.white, 0, Palette.border) }
         root.addView(header, -1, -2)
-        root.addView(notice, LinearLayout.LayoutParams(-1, -2).apply {
-            setMargins(dp(16), 0, dp(16), dp(6))
-        })
         root.addView(content, LinearLayout.LayoutParams(-1, 0, 1f))
         root.addView(nav, -1, -2)
         root.setOnApplyWindowInsetsListener { view, insets ->
@@ -143,7 +153,16 @@ class MainActivity : Activity() {
             }
             insets
         }
-        setContentView(root)
+        screen = FrameLayout(this).apply {
+            addView(root, FrameLayout.LayoutParams(-1, -1))
+            addView(notice, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+                marginStart = dp(16)
+                marginEnd = dp(16)
+                bottomMargin = dp(24)
+            })
+            viewTreeObserver.addOnGlobalLayoutListener { positionNotice() }
+        }
+        setContentView(screen)
         if (android.os.Build.VERSION.SDK_INT >= 30) {
             window.insetsController?.setSystemBarsAppearance(
                 WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS,
@@ -152,15 +171,18 @@ class MainActivity : Activity() {
         }
         root.requestApplyInsets()
         createMap()
+        (lastNonConfigurationInstance as? EditorDraft)?.let { draft ->
+            if (editorId == draft.id) draftToOpen = draft
+            else if (drawMode == DrawMode.MOVE_POINT || drawMode == DrawMode.MOVE_AREA) geometryDraft = draft
+        }
         render()
-        (lastNonConfigurationInstance as? EditorDraft)?.let { editView?.restoreDraft(it) }
     }
 
     @Deprecated("Retains unsaved editor input across configuration changes")
-    override fun onRetainNonConfigurationInstance(): Any? = editView?.unsavedDraft()
+    override fun onRetainNonConfigurationInstance(): Any? = editView?.snapshot() ?: geometryDraft
 
     override fun onSaveInstanceState(out: Bundle) {
-        editView?.flush()
+        persistDraftForRestoration(out)
         out.putString("tab", tab.name)
         out.putString("previous", previousTab.name)
         out.putString("editor", editorId)
@@ -185,20 +207,35 @@ class MainActivity : Activity() {
         super.onSaveInstanceState(out)
     }
 
+    private fun persistDraftForRestoration(out: Bundle) {
+        val draft = editView?.takeIf(JournalEditor::hasUnsavedChanges)?.snapshot() ?: geometryDraft
+        if (draft == null) return
+        runCatching {
+            val file = draftFile
+            val output = file.startWrite()
+            try {
+                output.write(draft.json().toString().toByteArray(Charsets.UTF_8))
+                file.finishWrite(output)
+                out.putString("draftToken", draftToken)
+            } catch (error: Exception) {
+                file.failWrite(output)
+                throw error
+            }
+        }.onFailure { android.util.Log.w("FieldJournal", "Could not keep editor draft for recreation", it) }
+    }
+
     override fun onResume() {
         super.onResume()
         if (tracking && this::gps.isInitialized) gps.start()
     }
 
     override fun onPause() {
-        editView?.flush()
         gps.stop()
         super.onPause()
     }
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
-        editView?.stopSaving()
         map.release()
         super.onDestroy()
     }
@@ -214,7 +251,6 @@ class MainActivity : Activity() {
     }
 
     private fun render() {
-        if (editView?.flush() == false) return
         rememberCatalogPosition()
         catalogView = null
         editView = null
@@ -223,15 +259,19 @@ class MainActivity : Activity() {
         nav.removeAllViews()
         if (editorId != null) {
             val id = requireNotNull(editorId)
-            val site = if (!editorIsNote) store.site(id) else null
-            val note = if (editorIsNote) store.note(id) else null
-            if (site != null || note != null) {
-                setHeader(if (note != null) "Запись дневника" else "Карточка объекта",
+            val draft = draftToOpen?.takeIf { it.id == id } ?: if (editorIsNote) {
+                store.note(id)?.let { EditorDraft(note = it) }
+            } else {
+                store.site(id)?.let { EditorDraft(site = it) }
+            }
+            draftToOpen = null
+            if (draft != null) {
+                setHeader(if (draft.note != null) "Запись дневника" else "Карточка объекта",
                     action("✓", primary = true, description = "Сохранить и закрыть") {
-                        closeEditor(announce = true)
-                    }.apply { textSize = 20f; minWidth = dp(48) }, true)
+                        closeEditor()
+                    }.apply { textSize = 14f; minWidth = dp(48) }, true)
                 updateNavigationVisibility()
-                editView = JournalEditor(this, site, note).also { editor ->
+                editView = JournalEditor(this, draft).also { editor ->
                     content.addView(editor)
                     editor.restoreScroll(editorScroll)
                 }
@@ -288,9 +328,12 @@ class MainActivity : Activity() {
     private fun switch(next: Tab) {
         if (drawMode != DrawMode.NONE && next != Tab.MAP) {
             confirm("Закрыть рисование?", "Добавленные вершины будут сброшены.") {
-                resetDraw()
-                tab = next
-                render()
+                if (geometryDraft != null) cancelDraw()
+                else {
+                    resetDraw()
+                    tab = next
+                    render()
+                }
             }
             return
         }
@@ -494,59 +537,64 @@ class MainActivity : Activity() {
         drawMode = DrawMode.NONE
         vertices.clear()
         geometrySite = null
+        geometryDraft = null
         selectedPoint = null
     }
 
     private fun cancelDraw() {
+        val original = geometryDraft
         val editing = geometrySite
         resetDraw()
-        if (editing != null) openSite(editing)
-        else {
+        if (original != null) {
+            openDraft(original)
+        } else if (editing != null) {
+            openSite(editing)
+        } else {
             refreshMap()
             updateControls()
         }
     }
 
     private fun saveGeometry(points: List<Coordinate>, fix: LocationFix? = null) {
-        val existing = geometrySite?.let(store::site)
-        if (existing != null) {
-            val updated = existing.copy(vertices = points, holes = emptyList(), accuracy = fix?.accuracy,
-                altitude = fix?.altitude, updated = System.currentTimeMillis())
-            if (!saveSiteGeometry(updated)) return
+        val original = geometryDraft ?: geometrySite?.let(store::site)?.let { EditorDraft(site = it) }
+        if (original != null) {
+            val site = requireNotNull(original.site)
+            val updated = if (site.vertices == points) site else site.copy(
+                vertices = points, holes = emptyList(), accuracy = fix?.accuracy, altitude = fix?.altitude
+            )
             resetDraw()
-            openSite(existing.id)
-            message("Положение объекта сохранено")
+            openDraft(original.copy(site = updated, dirty = original.dirty || updated != site))
             return
         }
         chooseType("Условный знак объекта") { type ->
             val site = Site(title = type.title, type = type.id, vertices = points, accuracy = fix?.accuracy, altitude = fix?.altitude)
-            if (saveSiteGeometry(site)) {
-                resetDraw()
-                openSite(site.id)
-                message("Объект сохранён")
-            }
+            resetDraw()
+            previousTab = tab
+            openDraft(EditorDraft(site = site, isNew = true))
         }
     }
 
-    private fun saveSiteGeometry(site: Site): Boolean = runCatching { store.save(site) }
-        .onFailure { message("Не удалось записать объект. Повторите сохранение") }.isSuccess
-
     internal fun editGeometry(site: Site) {
-        if (!clearEditor(save = true)) return
+        val draft = editView?.snapshot() ?: EditorDraft(site = site)
+        detachEditor()
         tab = Tab.MAP
         render()
         map.show(site)
+        geometryDraft = draft
         geometrySite = site.id
         if (site.area) vertices.addAll(site.vertices) else selectedPoint = site.anchor
         beginDraw(if (site.area) DrawMode.MOVE_AREA else DrawMode.MOVE_POINT)
     }
 
     internal fun showOnMap(site: Site) {
-        if (!clearEditor(save = true)) return
-        tab = Tab.MAP
-        filter = null
-        render()
-        map.post { map.show(site) }
+        confirmBeforeLeaving {
+            draftFile.delete()
+            detachEditor()
+            tab = Tab.MAP
+            filter = null
+            render()
+            map.post { map.show(site) }
+        }
     }
 
     internal fun chooseType(title: String, selection: (ObjectType) -> Unit) {
@@ -808,7 +856,7 @@ class MainActivity : Activity() {
         card(list, "Импорт ZIP или GeoJSON", "Существующие записи с теми же ID сохраняются") { pickDocument(IMPORT, "*/*") }
         card(list, "Экспорт резервной копии", "ZIP · карточки, дневник и вложения") { exportDocument(BACKUP, "application/zip", "field-journal-${shortDate()}.zip") }
         card(list, "Экспорт объектов GeoJSON", "WGS 84 · точки, контуры и поля карточек") { exportDocument(GEOJSON, "application/geo+json", "field-journal-${shortDate()}.geojson") }
-        list.addView(label("Изменения автоматически записываются в локальную базу. Карты MBTiles хранятся отдельно от резервных копий.", 13f, Palette.muted))
+        list.addView(label("Подтверждённые изменения хранятся в локальной базе. Карты MBTiles хранятся отдельно от резервных копий.", 13f, Palette.muted))
     }
 
     private fun shortDate() = java.time.LocalDate.now().toString()
@@ -869,7 +917,6 @@ class MainActivity : Activity() {
     }
 
     internal fun openSite(id: String) {
-        if (!saveBeforeAction()) return
         if (editorId == null) previousTab = tab
         noteOriginId = null
         noteOriginScroll = 0
@@ -878,57 +925,87 @@ class MainActivity : Activity() {
         render()
     }
 
+    private fun openDraft(draft: EditorDraft) {
+        draftToOpen = draft
+        editorId = draft.id
+        editorIsNote = draft.note != null
+        render()
+    }
+
     internal fun openRelatedNote(id: String) = openNote(id)
 
     private fun openNote(id: String) {
-        if (!saveBeforeAction()) return
+        confirmBeforeLeaving {
+            openNoteFromCurrentScreen(id)
+        }
+    }
+
+    private fun openNoteFromCurrentScreen(id: String, draft: EditorDraft? = null) {
         if (editorId == null) previousTab = tab
         noteOriginId = editorId?.takeUnless { editorIsNote }
         noteOriginScroll = if (noteOriginId != null) editView?.scrollPosition() ?: 0 else 0
-        editorId = id
-        editorIsNote = true
-        render()
+        draftFile.delete()
+        if (draft != null) {
+            openDraft(draft)
+        } else {
+            editorId = id
+            editorIsNote = true
+            render()
+        }
     }
 
     internal fun createNote(siteId: String?) {
-        if (!saveBeforeAction()) return
-        val note = Note(title = "Полевое наблюдение", siteId = siteId)
-        runCatching { store.save(note) }.onSuccess {
-            openNote(note.id)
-            message("Запись создана")
-        }.onFailure { message("Не удалось создать запись дневника") }
+        confirmBeforeLeaving {
+            val note = Note(title = "Полевое наблюдение", siteId = siteId)
+            openNoteFromCurrentScreen(note.id, EditorDraft(note = note, isNew = true))
+        }
     }
 
-    private fun saveBeforeAction(): Boolean {
-        if (editView?.flush() != false) return true
-        message("Не удалось сохранить. Правки остались в карточке")
-        return false
+    private fun confirmBeforeLeaving(after: () -> Unit) {
+        val editor = editView
+        if (editor == null || !editor.hasUnsavedChanges) {
+            after()
+            return
+        }
+        val question = when {
+            !editor.isNew -> "Сохранить изменения?"
+            editorIsNote -> "Сохранить новую запись?"
+            else -> "Сохранить новый объект?"
+        }
+        AlertDialog.Builder(this).setTitle(question)
+            .setNegativeButton("Сохранить") { _, _ ->
+                if (editor.saveConfirmed()) {
+                    after()
+                    message("Сохранено")
+                }
+            }
+            .setNeutralButton("Не сохранять") { _, _ ->
+                editor.discardDraft()
+                after()
+            }
+            .setPositiveButton("Отмена", null)
+            .show()
     }
 
-    private fun clearEditor(save: Boolean): Boolean {
-        if (save && !saveBeforeAction()) return false
-        editView?.stopSaving()
+    private fun detachEditor() {
         editView = null
         editorId = null
         getSystemService(InputMethodManager::class.java)?.hideSoftInputFromWindow(root.windowToken, 0)
-        return true
     }
 
-    internal fun closeEditor(save: Boolean = true, announce: Boolean = false) {
-        val showSaved = save && (announce || editView?.hasUnsavedChanges == true)
-        if (!clearEditor(save)) {
-            AlertDialog.Builder(this).setTitle("Правки не сохранены")
-                .setMessage("Можно повторить запись или остаться в карточке.")
-                .setNegativeButton("Повторить") { _, _ -> closeEditor(announce = announce) }
-                .setNeutralButton("Выйти без записи") { _, _ -> closeEditor(save = false) }
-                .setPositiveButton("Остаться", null)
-                .show()
-            return
-        }
+    internal fun closeEditor() = confirmBeforeLeaving { finishEditor() }
+
+    internal fun closeDeletedEditor() {
+        editView?.discardDraft()
+        finishEditor()
+    }
+
+    private fun finishEditor() {
+        draftFile.delete()
+        detachEditor()
         dismissNotice()
         restoreEditorOrigin()
         render()
-        if (showSaved) message("Изменения сохранены")
     }
 
     private fun restoreEditorOrigin() {
@@ -941,14 +1018,12 @@ class MainActivity : Activity() {
     }
 
     internal fun pickAttachment(owner: String, note: Boolean, photoOnly: Boolean) {
-        if (!saveBeforeAction()) return
         pendingOwner = owner
         pendingIsNote = note
         pickDocument(ATTACH, if (photoOnly) "image/*" else "*/*")
     }
 
     internal fun capturePhoto(owner: String, note: Boolean) {
-        if (!saveBeforeAction()) return
         val id = newId()
         val photo = Attachment(id, "Фото ${shortDate()}.jpg", "image/jpeg")
         val uri = attachmentUri(this, photo, true)
@@ -997,20 +1072,14 @@ class MainActivity : Activity() {
                 val note = pendingIsNote
                 pendingOwner = null
                 if (resultCode != RESULT_OK || uri == null || owner == null) return
-                withIo("Копирование вложения", {
-                    val record = requireNotNull(contentResolver.openInputStream(uri)).use {
+                withIo("Копирование вложения", abandoned = { record: Attachment ->
+                    store.attachmentFile(record.id).delete()
+                }, work = {
+                    requireNotNull(contentResolver.openInputStream(uri)).use {
                         store.addAttachment(it, documentName(uri), contentResolver.getType(uri) ?: "application/octet-stream")
                     }
-                    try {
-                        store.appendAttachment(owner, note, record)
-                    } catch (error: Exception) {
-                        store.attachmentFile(record.id).delete()
-                        throw error
-                    }
-                    record
                 }) { record ->
-                    if (editorId == owner && editorIsNote == note) editView?.showSavedAttachment(record)
-                    message("Вложение добавлено")
+                    stageMedia(owner, note, record)
                 }
             }
             MBTILES -> {
@@ -1060,7 +1129,7 @@ class MainActivity : Activity() {
         val file = store.attachmentFile(id)
         val record = Attachment(id, "Фото ${shortDate()}.jpg", "image/jpeg")
         revokeUriPermission(attachmentUri(this, record, true), Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-        if (resultCode == RESULT_OK && file.length() in 1..JournalStore.MAX_ATTACHMENT) addMedia(owner, pendingIsNote, record)
+        if (resultCode == RESULT_OK && file.length() in 1..JournalStore.MAX_ATTACHMENT) stageMedia(owner, pendingIsNote, record)
         else {
             file.delete()
             if (resultCode == RESULT_OK) message("Камера вернула пустой снимок или файл слишком велик")
@@ -1070,22 +1139,25 @@ class MainActivity : Activity() {
     private fun documentName(uri: Uri) = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
         ?.use { if (it.moveToFirst()) it.getString(0) else null }.orEmpty()
 
-    private fun addMedia(id: String, note: Boolean, record: Attachment) {
-        runCatching { store.appendAttachment(id, note, record) }.onSuccess {
-            if (editorId == id && editorIsNote == note) editView?.showSavedAttachment(record)
-            message("Снимок добавлен")
-        }.onFailure {
+    private fun stageMedia(id: String, note: Boolean, record: Attachment) {
+        val editor = editView
+        if (editor != null && editorId == id && editorIsNote == note) {
+            editor.stageAttachment(record)
+            message("Вложение добавлено в черновик")
+        } else {
             store.attachmentFile(record.id).delete()
-            message("Не удалось сохранить снимок: ${it.message.orEmpty()}")
         }
     }
 
-    private fun <T> withIo(title: String, work: () -> T, success: (T) -> Unit) {
+    private fun <T> withIo(title: String, work: () -> T, abandoned: (T) -> Unit = {}, success: (T) -> Unit) {
         val dialog = AlertDialog.Builder(this).setTitle(title).setMessage("Подождите…").setCancelable(false).show()
         io.execute {
             val result = runCatching(work)
-            handler.post {
-                if (isDestroyed || isFinishing) return@post
+            Handler(Looper.getMainLooper()).post {
+                if (isDestroyed || isFinishing) {
+                    result.onSuccess(abandoned)
+                    return@post
+                }
                 dialog.dismiss()
                 result.onSuccess(success).onFailure { error ->
                     AlertDialog.Builder(this).setTitle("Операция не завершена")
@@ -1105,7 +1177,29 @@ class MainActivity : Activity() {
         handler.removeCallbacks(hideNotice)
         notice.text = text
         notice.visibility = View.VISIBLE
-        handler.postDelayed(hideNotice, 4500)
+        positionNotice()
+        handler.postDelayed(hideNotice, 3000)
+    }
+
+    private fun positionNotice() {
+        if (notice.visibility != View.VISIBLE || screen.height == 0) return
+        val anchor = when {
+            editorId == null && tab == Tab.MAP && mapActions.isShown -> mapActions
+            nav.isShown -> nav
+            else -> null
+        }
+        val bottom = if (anchor == null) {
+            root.paddingBottom + dp(24)
+        } else {
+            val location = IntArray(2).also(anchor::getLocationInWindow)
+            val host = IntArray(2).also(screen::getLocationInWindow)
+            screen.height - (location[1] - host[1]) + dp(12)
+        }
+        val params = notice.layoutParams as FrameLayout.LayoutParams
+        if (params.bottomMargin != bottom) {
+            params.bottomMargin = bottom
+            notice.layoutParams = params
+        }
     }
 
     private fun dismissNotice() {

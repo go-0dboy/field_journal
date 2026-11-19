@@ -149,17 +149,6 @@ internal class JournalStore(context: Context, private val backupLimit: Long = MA
         }.onFailure { android.util.Log.w("FieldJournal", "Could not refresh journal snapshot", it) }
     }
 
-    @Synchronized fun appendAttachment(owner: String, isNote: Boolean, record: Attachment) {
-        val now = System.currentTimeMillis()
-        if (isNote) {
-            val note = note(owner) ?: error("Запись дневника удалена")
-            save(note.copy(attachments = (note.attachments + record).distinctBy(Attachment::id), updated = now))
-        } else {
-            val site = site(owner) ?: error("Карточка объекта удалена")
-            save(site.copy(attachments = (site.attachments + record).distinctBy(Attachment::id), updated = now))
-        }
-    }
-
     fun exportGeoJson(out: OutputStream) {
         out.write(collection(sites(), false).toString(2).toByteArray(Charsets.UTF_8))
     }

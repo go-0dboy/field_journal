@@ -1,5 +1,6 @@
 package ru.fieldjournal
 
+import android.app.AlertDialog
 import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
@@ -12,6 +13,7 @@ import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowAlertDialog
 import java.time.Duration
 
 @RunWith(RobolectricTestRunner::class)
@@ -39,20 +41,23 @@ class EditorNavigationTest {
             root.text("+ Запись об объекте").performClick()
             root.input("Заголовок").setText("Повторный обход")
             root.action("Сохранить и закрыть").performClick()
+            assertFalse(controller.get().store.notes().any { it.title == "Повторный обход" })
+            chooseConfirmation(AlertDialog.BUTTON_NEGATIVE)
             root.text("Карточка объекта")
-            root.text("Изменения сохранены")
+            root.text("Сохранено")
             assertTrue(controller.get().store.notes().any { it.siteId == site.id && it.title == "Повторный обход" })
         } finally {
             controller.pause().stop().destroy()
         }
     }
 
-    @Test fun headerCheckReplacesEditorFooterAndNotificationsHaveTheirOwnSpace() {
+    @Test fun noticesFloatAboveMapButtonsAndNewNotesRequireConfirmation() {
         val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
         try {
             val activity = controller.get()
             val root = activity.window.decorView
             root.text("+ Точка").performClick()
+            layout(root)
             layout(root)
             val hint = root.text("Коснитесь места и нажмите «Установить»")
             val install = root.text("Установить")
@@ -69,14 +74,49 @@ class EditorNavigationTest {
             assertNull(root.descendants().filterIsInstance<TextView>().firstOrNull {
                 it.text == "Разделы" || it.text == "Сохранено" || it.text == "Готово"
             })
-            val created = root.text("Запись создана")
-            assertTrue(top(save) + save.height <= top(created))
-            save.performClick()
-            root.text("Дневник")
-            root.text("Изменения сохранены")
+            val knownIds = activity.store.notes().map(Note::id).toSet()
+            root.input("Заголовок").setText("Черновая запись")
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(2))
+            controller.recreate()
+            val restored = controller.get().window.decorView
+            assertEquals("Черновая запись", restored.input("Заголовок").text.toString())
+            restored.action("Сохранить и закрыть").performClick()
+            assertTrue(activity.store.notes().all { it.id in knownIds })
+            chooseConfirmation(AlertDialog.BUTTON_POSITIVE)
+            assertEquals("Черновая запись", restored.input("Заголовок").text.toString())
+            restored.action("Назад").performClick()
+            chooseConfirmation(AlertDialog.BUTTON_NEUTRAL)
+            restored.text("Дневник")
+            assertTrue(activity.store.notes().all { it.id in knownIds })
         } finally {
             controller.pause().stop().destroy()
         }
+    }
+
+    @Test fun discardingChangesKeepsStoredObjectAndClearsStagedFile() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        try {
+            val activity = controller.get()
+            val original = Site(title = "Исходный объект", vertices = listOf(Coordinate(59.0, 33.0)))
+            activity.store.save(original)
+            activity.openSite(original.id)
+            val root = activity.window.decorView
+            root.input("Название").setText("Изменено")
+            val attachment = activity.store.addAttachment("данные".byteInputStream(), "plan.txt", "text/plain")
+            root.descendants().filterIsInstance<JournalEditor>().single().stageAttachment(attachment)
+            assertEquals(original, activity.store.site(original.id))
+            root.action("Назад").performClick()
+            chooseConfirmation(AlertDialog.BUTTON_NEUTRAL)
+            assertEquals(original, activity.store.site(original.id))
+            assertFalse(activity.store.attachmentFile(attachment.id).exists())
+        } finally {
+            controller.pause().stop().destroy()
+        }
+    }
+
+    private fun chooseConfirmation(button: Int) {
+        ShadowAlertDialog.getLatestAlertDialog().getButton(button).performClick()
+        shadowOf(Looper.getMainLooper()).idle()
     }
 
     private fun layout(view: View) {

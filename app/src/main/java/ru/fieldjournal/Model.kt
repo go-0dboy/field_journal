@@ -1,0 +1,227 @@
+package ru.fieldjournal
+
+import org.json.JSONArray
+import org.json.JSONObject
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
+import java.util.UUID
+import kotlin.math.*
+
+internal data class Coordinate(val latitude: Double, val longitude: Double) {
+    init {
+        require(latitude.isFinite() && latitude in -90.0..90.0 && longitude.isFinite() && longitude in -180.0..180.0) {
+            "Координаты должны быть в пределах WGS 84"
+        }
+    }
+
+    fun json() = JSONArray().put(longitude).put(latitude)
+    fun display() = String.format(Locale.US, "%.6f, %.6f", latitude, longitude)
+
+    companion object {
+        fun read(json: JSONArray) = Coordinate(json.getDouble(1), json.getDouble(0))
+    }
+}
+
+internal data class ObjectType(val id: String, val title: String, val color: Int)
+
+internal val objectTypes = listOf(
+    ObjectType("camp", "Стоянка", 0xff28665b.toInt()),
+    ObjectType("settlement", "Селище", 0xff356295.toInt()),
+    ObjectType("fort", "Городище", 0xff325668.toInt()),
+    ObjectType("mound", "Курган", 0xffa4512f.toInt()),
+    ObjectType("mounds", "Курганная группа", 0xff963f28.toInt()),
+    ObjectType("cemetery", "Могильник / некрополь", 0xff765287.toInt()),
+    ObjectType("find", "Место находки", 0xff8a641f.toInt()),
+    ObjectType("excavation", "Раскоп / шурф", 0xff48764b.toInt()),
+    ObjectType("tract", "Историческое урочище", 0xff4e6744.toInt()),
+    ObjectType("building", "Историческое сооружение", 0xff855746.toInt()),
+    ObjectType("road", "Дорога / переправа", 0xff575c70.toInt()),
+    ObjectType("other", "Другое / не определено", 0xff536358.toInt())
+)
+
+internal fun objectType(id: String) = objectTypes.find { it.id == id } ?: objectTypes.last()
+internal fun newId() = UUID.randomUUID().toString()
+internal val attachmentId = Regex("[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}")
+
+internal fun JSONArray.objects() = (0 until length()).map { getJSONObject(it) }
+internal fun JSONArray.arrays() = (0 until length()).map { getJSONArray(it) }
+internal fun JSONObject.array(key: String) = optJSONArray(key) ?: JSONArray()
+internal fun JSONObject.nullableDouble(key: String) = if (isNull(key)) null else optDouble(key).takeIf { it.isFinite() }
+
+internal data class Attachment(val id: String, val name: String, val mime: String) {
+    init { require(attachmentId.matches(id)) { "Недопустимый идентификатор вложения" } }
+    fun json() = JSONObject().put("id", id).put("name", name).put("mime", mime)
+    companion object {
+        fun read(value: JSONObject) = Attachment(value.getString("id"), value.getString("name"), value.optString("mime", "application/octet-stream"))
+    }
+}
+
+internal data class Site(
+    val id: String = newId(),
+    val title: String = "",
+    val type: String = "other",
+    val vertices: List<Coordinate>,
+    val holes: List<List<Coordinate>> = emptyList(),
+    val description: String = "",
+    val period: String = "",
+    val culture: String = "",
+    val condition: String = "",
+    val inventory: String = "",
+    val author: String = "",
+    val confidence: String = "",
+    val context: String = "",
+    val sources: String = "",
+    val accuracy: Double? = null,
+    val altitude: Double? = null,
+    val attachments: List<Attachment> = emptyList(),
+    val created: Long = System.currentTimeMillis(),
+    val updated: Long = created
+) {
+    init { require(vertices.size == 1 || vertices.size >= 3) }
+    val area get() = vertices.size > 1
+    val anchor get() = if (!area) vertices.first() else polygonCenter(vertices)
+
+    fun feature(normalizeWinding: Boolean = false): JSONObject {
+        val geometry = JSONObject()
+        if (!area) {
+            geometry.put("type", "Point").put("coordinates", anchor.json())
+        } else {
+            val rings = listOf(vertices) + holes
+            geometry.put("type", "Polygon").put("coordinates", JSONArray(rings.mapIndexed { index, ring ->
+                val coordinates = if (normalizeWinding && counterclockwise(ring) != (index == 0)) ring.reversed() else ring
+                JSONArray((coordinates + coordinates.first()).map(Coordinate::json))
+            }))
+        }
+        val properties = JSONObject()
+            .put("title", title).put("type", type).put("description", description)
+            .put("period", period).put("culture", culture).put("condition", condition)
+            .put("inventory", inventory).put("author", author).put("confidence", confidence)
+            .put("context", context).put("sources", sources)
+            .put("accuracy_m", accuracy ?: JSONObject.NULL).put("altitude_m", altitude ?: JSONObject.NULL)
+            .put("attachments", JSONArray(attachments.map(Attachment::json)))
+            .put("created", created).put("updated", updated)
+        return JSONObject().put("type", "Feature").put("id", id).put("geometry", geometry).put("properties", properties)
+    }
+
+    companion object {
+        fun read(feature: JSONObject, withAttachments: Boolean, validate: Boolean = true): Site {
+            require(feature.getString("type") == "Feature") { "Ожидается объект GeoJSON Feature" }
+            val geometry = feature.getJSONObject("geometry")
+            val coords = geometry.getJSONArray("coordinates")
+            val rings = when (geometry.getString("type")) {
+                "Point" -> listOf(listOf(Coordinate.read(coords)))
+                "Polygon" -> coords.arrays().map { ring ->
+                    val points = ring.arrays().map(Coordinate::read)
+                    require(points.size >= 4 && points.first() == points.last()) { "Контур GeoJSON должен быть замкнут" }
+                    points.dropLast(1).also {
+                        require(!validate || validPolygon(it)) { "Контур должен содержать ≥ 3 разные вершины без самопересечений" }
+                    }
+                }.also { require(it.isNotEmpty()) { "У полигона отсутствует контур" } }
+                else -> error("Поддерживаются геометрии Point и Polygon")
+            }
+            val p = feature.optJSONObject("properties") ?: JSONObject()
+            val attachments = if (withAttachments) p.array("attachments").objects().map(Attachment::read) else emptyList()
+            val created = p.optLong("created", System.currentTimeMillis())
+            val id = feature.optString("id").takeIf { !feature.isNull("id") && it.isNotBlank() }
+                ?: if (withAttachments) newId() else UUID.nameUUIDFromBytes(feature.toString().toByteArray(Charsets.UTF_8)).toString()
+            return Site(
+                id, p.optString("title").ifBlank { p.optString("name", "Объект без названия") },
+                p.optString("type", "other"), rings.first(), rings.drop(1), p.optString("description"),
+                p.optString("period"), p.optString("culture"), p.optString("condition"),
+                p.optString("inventory"), p.optString("author"), p.optString("confidence"),
+                p.optString("context"), p.optString("sources"), p.nullableDouble("accuracy_m"),
+                p.nullableDouble("altitude_m"), attachments, created, p.optLong("updated", created)
+            )
+        }
+    }
+}
+
+internal data class Note(
+    val id: String = newId(),
+    val title: String = "",
+    val body: String = "",
+    val author: String = "",
+    val weather: String = "",
+    val siteId: String? = null,
+    val attachments: List<Attachment> = emptyList(),
+    val created: Long = System.currentTimeMillis(),
+    val updated: Long = created
+) {
+    fun json() = JSONObject().put("id", id).put("title", title).put("body", body)
+        .put("author", author).put("weather", weather).put("site_id", siteId ?: JSONObject.NULL)
+        .put("attachments", JSONArray(attachments.map(Attachment::json)))
+        .put("created", created).put("updated", updated)
+
+    companion object {
+        fun read(value: JSONObject): Note = Note(
+            value.getString("id"), value.getString("title"), value.optString("body"),
+            value.optString("author"), value.optString("weather"),
+            if (value.isNull("site_id")) null else value.optString("site_id"),
+            value.array("attachments").objects().map(Attachment::read), value.getLong("created"),
+            value.optLong("updated", value.getLong("created"))
+        )
+    }
+}
+
+internal fun dateLabel(time: Long): String = DateTimeFormatter.ofPattern("d MMM yyyy, HH:mm", Locale.forLanguageTag("ru"))
+    .format(Instant.ofEpochMilli(time).atZone(ZoneId.systemDefault()))
+
+internal fun longitudeDelta(lon: Double, reference: Double) = ((lon - reference + 540.0) % 360.0) - 180.0
+internal fun wrapLongitude(lon: Double) = ((lon + 180.0) % 360.0 + 360.0) % 360.0 - 180.0
+
+internal fun polygonCenter(points: List<Coordinate>): Coordinate {
+    val reference = points.first().longitude
+    return Coordinate(points.map { it.latitude }.average(), wrapLongitude(reference + points.map { longitudeDelta(it.longitude, reference) }.average()))
+}
+
+internal fun areaSquareMeters(points: List<Coordinate>): Double {
+    val radians = PI / 180.0
+    val sum = points.indices.sumOf { index ->
+        val a = points[index]
+        val b = points[(index + 1) % points.size]
+        longitudeDelta(b.longitude, a.longitude) * radians * (sin(a.latitude * radians) + sin(b.latitude * radians))
+    }
+    return abs(sum) * 6371008.8.pow(2) / 2
+}
+
+private fun counterclockwise(ring: List<Coordinate>): Boolean {
+    val reference = ring.first()
+    val signedArea = ring.indices.sumOf { index ->
+        val a = ring[index]
+        val b = ring[(index + 1) % ring.size]
+        longitudeDelta(a.longitude, reference.longitude) * (b.latitude - reference.latitude) -
+            longitudeDelta(b.longitude, reference.longitude) * (a.latitude - reference.latitude)
+    }
+    return signedArea > 0
+}
+
+internal fun validPolygon(points: List<Coordinate>): Boolean {
+    if (points.size !in 3..2000 || points.distinct().size != points.size || areaSquareMeters(points) < 0.01) return false
+    val reference = points.first()
+    val plane = points.map { longitudeDelta(it.longitude, reference.longitude) to it.latitude - reference.latitude }
+    fun cross(a: Pair<Double, Double>, b: Pair<Double, Double>, c: Pair<Double, Double>) =
+        (b.first - a.first) * (c.second - a.second) - (b.second - a.second) * (c.first - a.first)
+    fun intersects(i: Int, j: Int): Boolean {
+        val a = plane[i]
+        val b = plane[(i + 1) % plane.size]
+        val c = plane[j]
+        val d = plane[(j + 1) % plane.size]
+        val boundingBoxesOverlap = max(min(a.first, b.first), min(c.first, d.first)) <= min(max(a.first, b.first), max(c.first, d.first)) &&
+            max(min(a.second, b.second), min(c.second, d.second)) <= min(max(a.second, b.second), max(c.second, d.second))
+        return boundingBoxesOverlap && cross(a, b, c) * cross(a, b, d) <= 0 &&
+            cross(c, d, a) * cross(c, d, b) <= 0
+    }
+    for (i in plane.indices) {
+        for (j in i + 2 until plane.size) {
+            if (i == 0 && j == plane.lastIndex) continue
+            if (intersects(i, j)) return false
+        }
+    }
+    return true
+}
+
+internal fun areaLabel(squareMeters: Double) = if (squareMeters >= 10000)
+    String.format(Locale.forLanguageTag("ru"), "%.2f га", squareMeters / 10000)
+else String.format(Locale.forLanguageTag("ru"), "%.1f м²", squareMeters)

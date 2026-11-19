@@ -1,0 +1,3 @@
+<resources>
+    <string name="save_failed">Ошибка сохранения: %1$s</string>
+</resources>

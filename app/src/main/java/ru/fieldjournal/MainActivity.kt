@@ -722,8 +722,10 @@ class MainActivity : Activity() {
             controls.addView(group, -1, -2)
             if (history == null) {
                 group.addView(label("Историческая карта", 17f, Palette.pine, true))
+                group.addSpace(4)
+                group.addView(label("MBTiles, SQLiteDB, GeoPackage", 13f, Palette.muted))
                 group.addSpace(6)
-                group.addView(action("Подключить MBTiles") {
+                group.addView(action("Подключить карту") {
                     dialog.dismiss()
                     pickDocument(HISTORICAL, "*/*")
                 }, -1, -2)
@@ -778,7 +780,7 @@ class MainActivity : Activity() {
                     map.refresh()
                 }, -1, -2)
                 if (tiles.offline) {
-                    group.addView(label(references?.name ?: "Для офлайна нужен прозрачный слой MBTiles", 13f, Palette.muted))
+                    group.addView(label(references?.name ?: "Для офлайна нужен файл с прозрачными тайлами", 13f, Palette.muted))
                     group.addSpace(6)
                     group.addView(action(if (references == null) "Подключить подписи" else "Заменить подписи") {
                         dialog.dismiss()
@@ -971,9 +973,9 @@ class MainActivity : Activity() {
         for (layer in MapLayer.entries) {
             val info = tiles.info(layer.archive)
             val detail = when {
-                info != null -> "${info.name} · масштаб ${info.minZoom}–${info.maxZoom}"
-                layer == MapLayer.HYBRID && tiles.info(MapPackage.SATELLITE) != null -> "Используется офлайн-спутник · можно подключить свой MBTiles"
-                else -> "Подключить растровый файл MBTiles"
+                info != null -> "${info.name} · ${info.format.title} · масштаб ${info.minZoom}–${info.maxZoom}"
+                layer == MapLayer.HYBRID && tiles.info(MapPackage.SATELLITE) != null -> "Используется офлайн-спутник · можно подключить свою карту"
+                else -> "MBTiles, SQLiteDB или GeoPackage"
             }
             card(list, "Офлайн · ${layer.title}", detail) {
                 if (info == null) pickMap(layer) else {
@@ -989,7 +991,7 @@ class MainActivity : Activity() {
             Triple(MapPackage.REFERENCES, "Офлайн · дороги и подписи", REFERENCES)
         )) {
             val archive = tiles.info(slot)
-            card(list, title, archive?.name ?: "Подключить растровый файл MBTiles") {
+            card(list, title, archive?.let { "${it.name} · ${it.format.title}" } ?: "MBTiles, SQLiteDB или GeoPackage") {
                 pickDocument(request, "*/*")
             }
         }
@@ -999,7 +1001,7 @@ class MainActivity : Activity() {
         card(list, "Импорт ZIP или GeoJSON", "Существующие записи с теми же ID сохраняются") { pickDocument(IMPORT, "*/*") }
         card(list, "Экспорт резервной копии", "ZIP · карточки, дневник и вложения") { exportDocument(BACKUP, "application/zip", "field-journal-${shortDate()}.zip") }
         card(list, "Экспорт объектов GeoJSON", "WGS 84 · точки, контуры и поля карточек") { exportDocument(GEOJSON, "application/geo+json", "field-journal-${shortDate()}.geojson") }
-        list.addView(label("Подтверждённые изменения хранятся в локальной базе. Карты MBTiles хранятся отдельно от резервных копий.", 13f, Palette.muted))
+        list.addView(label("Подтверждённые изменения хранятся в локальной базе. Файлы карт хранятся отдельно от резервных копий.", 13f, Palette.muted))
     }
 
     private fun shortDate() = java.time.LocalDate.now().toString()
@@ -1033,7 +1035,7 @@ class MainActivity : Activity() {
 
     private fun pickMap(layer: MapLayer) {
         pendingMap = layer
-        pickDocument(MBTILES, "*/*")
+        pickDocument(RASTER_MAP, "*/*")
     }
 
     private fun activateMap(layer: MapLayer, info: OfflineInfo) {
@@ -1230,12 +1232,12 @@ class MainActivity : Activity() {
                     stageMedia(owner, note, record)
                 }
             }
-            MBTILES -> {
+            RASTER_MAP -> {
                 val layer = pendingMap
                 pendingMap = null
                 if (resultCode != RESULT_OK || uri == null || layer == null) return
                 withIo("Установка офлайн-карты", {
-                    requireNotNull(contentResolver.openInputStream(uri)).use { tiles.install(layer.archive, it) }
+                    installRaster(layer.archive, uri)
                 }) {
                     activateMap(layer, it)
                     message("Офлайн-карта установлена")
@@ -1246,7 +1248,7 @@ class MainActivity : Activity() {
                 val historic = requestCode == HISTORICAL
                 val slot = if (historic) MapPackage.HISTORICAL else MapPackage.REFERENCES
                 withIo(if (historic) "Установка исторической карты" else "Установка слоя подписей", {
-                    requireNotNull(contentResolver.openInputStream(uri)).use { tiles.install(slot, it) }
+                    installRaster(slot, uri)
                 }) { info ->
                     if (historic) tiles.historicalEnabled = true else tiles.referencesEnabled = true
                     map.refresh()
@@ -1298,6 +1300,13 @@ class MainActivity : Activity() {
         else {
             file.delete()
             if (resultCode == RESULT_OK) message("Камера вернула пустой снимок или файл слишком велик")
+        }
+    }
+
+    private fun installRaster(slot: MapPackage, uri: Uri): OfflineInfo {
+        val name = runCatching { documentName(uri) }.getOrDefault("")
+        return requireNotNull(contentResolver.openInputStream(uri)) { "Не удалось открыть файл карты" }.use {
+            tiles.install(slot, it, name)
         }
     }
 
@@ -1376,7 +1385,7 @@ class MainActivity : Activity() {
         private const val LOCATION = 10
         private const val ATTACH = 11
         private const val CAMERA = 12
-        private const val MBTILES = 13
+        private const val RASTER_MAP = 13
         private const val IMPORT = 14
         private const val BACKUP = 15
         private const val GEOJSON = 16

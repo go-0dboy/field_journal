@@ -22,14 +22,6 @@ internal enum class TilePass { BASE, HISTORICAL, ROADS, PLACES }
 
 internal data class Tile(val z: Int, val x: Int, val y: Int)
 
-internal data class OfflineInfo(
-    val name: String,
-    val attribution: String,
-    val minZoom: Int,
-    val maxZoom: Int,
-    val center: Coordinate?
-)
-
 internal class MapTiles(context: Context) {
     private val folder = File(context.filesDir, "maps").apply { mkdirs() }
     private val settings = context.getSharedPreferences("map", Context.MODE_PRIVATE)
@@ -68,17 +60,20 @@ internal class MapTiles(context: Context) {
         settings.getString("longitude", "37.0")!!.toDouble()
     ) to settings.getString("zoom", "5.0")!!.toDouble()
 
-    private data class Package(val db: SQLiteDatabase, val info: OfflineInfo)
+    private data class Package(val db: SQLiteDatabase, val archive: RasterArchive)
     private val offlinePackages = mutableMapOf<MapPackage, Package>()
     private val packageLock = Any()
 
+    // These internal paths are kept for packages installed by previous versions.
     private fun file(slot: MapPackage) = File(folder, "${slot.name}.mbtiles")
+
+    private fun packageNameKey(slot: MapPackage) = "archive-name-${slot.name}"
 
     fun baseArchive(layer: MapLayer) =
         if (layer == MapLayer.HYBRID && !file(MapPackage.HYBRID).isFile) MapPackage.SATELLITE else layer.archive
 
     fun info(slot: MapPackage): OfflineInfo? = synchronized(packageLock) {
-        runCatching { offlinePackage(slot)?.info }.getOrNull()
+        runCatching { offlinePackage(slot)?.archive?.info }.getOrNull()
     }
 
     private fun offlinePackage(slot: MapPackage): Package? {
@@ -87,7 +82,8 @@ internal class MapTiles(context: Context) {
         if (!file.isFile) return null
         val db = open(file)
         try {
-            return Package(db, readInfo(db)).also { offlinePackages[slot] = it }
+            val name = settings.getString(packageNameKey(slot), "").orEmpty()
+            return Package(db, RasterArchive.open(db, name)).also { offlinePackages[slot] = it }
         } catch (e: Exception) {
             db.close()
             throw e
@@ -96,74 +92,39 @@ internal class MapTiles(context: Context) {
 
     private fun open(file: File) = SQLiteDatabase.openDatabase(file.path, null, SQLiteDatabase.OPEN_READONLY or SQLiteDatabase.NO_LOCALIZED_COLLATORS)
 
-    private fun readInfo(db: SQLiteDatabase): OfflineInfo {
-        val metadata = db.rawQuery("SELECT name,value FROM metadata", null).use { cursor ->
-            buildMap { while (cursor.moveToNext()) put(cursor.getString(0), cursor.getString(1)) }
-        }
-        require(metadata["format"]?.lowercase() in setOf("png", "jpg", "jpeg", "webp")) {
-            "Для офлайн-карты нужны растровые MBTiles (PNG, JPEG или WebP)"
-        }
-        val range = db.rawQuery(
-            "SELECT (SELECT MIN(zoom_level) FROM tiles), (SELECT MAX(zoom_level) FROM tiles)", null
-        ).use { cursor ->
-            check(cursor.moveToFirst() && !cursor.isNull(0)) { "В MBTiles нет тайлов" }
-            cursor.getInt(0) to cursor.getInt(1)
-        }
-        require(range.first in 0..22 && range.second in range.first..22) { "Неподдерживаемый масштаб MBTiles" }
-        fun coordinate(lon: Double, lat: Double) = runCatching { Coordinate(lat, lon) }.getOrNull()
-        val center = metadata["center"]?.split(",")?.mapNotNull(String::toDoubleOrNull)
-        val bounds = metadata["bounds"]?.split(",")?.mapNotNull(String::toDoubleOrNull)
-        val point = when {
-            center?.size == 3 -> coordinate(center[0], center[1])
-            bounds?.size == 4 -> coordinate(
-                wrapLongitude(bounds[0] + (if (bounds[2] >= bounds[0]) bounds[2] - bounds[0] else bounds[2] - bounds[0] + 360.0) / 2),
-                (bounds[1] + bounds[3]) / 2
-            )
-            else -> db.rawQuery(
-                "SELECT tile_column,tile_row FROM tiles WHERE zoom_level=? LIMIT 1",
-                arrayOf(range.first.toString())
-            ).use {
-                if (!it.moveToFirst()) null else {
-                    val count = (1 shl range.first).toDouble()
-                    coordinate((it.getInt(0) + 0.5) / count * 360 - 180, degreeLatitude(1 - (it.getInt(1) + 0.5) / count))
-                }
-            }
-        }
-        return OfflineInfo(metadata["name"] ?: "MBTiles", metadata["attribution"].orEmpty().replace(Regex("<[^>]+>"), ""),
-            range.first, range.second, point)
-    }
-
-    fun install(slot: MapPackage, input: InputStream): OfflineInfo {
-        val temp = File(folder, "import-${newId()}.mbtiles")
+    fun install(slot: MapPackage, input: InputStream, filename: String = ""): OfflineInfo {
+        val temp = File(folder, "import-${newId()}.sqlite")
+        val fallbackName = filename.substringBeforeLast('.', filename)
         try {
             temp.outputStream().use { input.copyLimited(it, 8L * 1024 * 1024 * 1024) }
             val info = open(temp).use { db ->
-                val result = readInfo(db)
-                db.rawQuery("SELECT tile_data FROM tiles LIMIT 1", null).use {
-                    require(it.moveToFirst()) { "В MBTiles нет тайлов" }
-                    val bitmap = requireNotNull(decode(it.getBlob(0))) { "Не удалось прочитать растровый тайл" }
-                    try {
-                        require(slot != MapPackage.REFERENCES || bitmap.hasAlpha()) {
-                            "Для подписей нужен прозрачный растр PNG или WebP"
-                        }
-                    } finally {
-                        bitmap.recycle()
+                val archive = RasterArchive.open(db, fallbackName)
+                val bytes = requireNotNull(archive.sample()) { "В карте нет тайлов" }
+                val bitmap = requireNotNull(decode(bytes)) { "Не удалось прочитать растровый тайл" }
+                try {
+                    require(slot != MapPackage.REFERENCES || bitmap.hasAlpha()) {
+                        "Для подписей нужен прозрачный растр PNG или WebP"
                     }
+                } finally {
+                    bitmap.recycle()
                 }
-                result
+                archive.info
             }
             synchronized(packageLock) {
                 offlinePackages.remove(slot)?.db?.close()
                 check(temp.renameTo(file(slot))) { "Не удалось установить слой карты" }
+                settings.edit().putString(packageNameKey(slot), fallbackName).apply()
             }
             return info
+        } catch (error: android.database.sqlite.SQLiteException) {
+            throw IllegalArgumentException("Не удалось прочитать карту. Нужен растровый MBTiles, SQLiteDB или GeoPackage", error)
         } finally {
             temp.delete()
         }
     }
 
     fun credit(layer: MapLayer, offline: Boolean): String = if (offline) {
-        info(baseArchive(layer))?.attribution?.ifBlank { "Локальный архив MBTiles" } ?: ""
+        info(baseArchive(layer))?.let { it.attribution.ifBlank { "Локальная карта · ${it.format.title}" } }.orEmpty()
     } else when (layer) {
         MapLayer.STREET -> if (customUrl.isBlank()) "© OpenStreetMap contributors" else customCredit
         MapLayer.SATELLITE -> "© Esri, Vantor, Earthstar Geographics, GIS User Community"
@@ -202,16 +163,12 @@ internal class MapTiles(context: Context) {
 
     private fun readOffline(slot: MapPackage, tile: Tile): Bitmap? {
         return synchronized(packageLock) {
-            val source = offlinePackage(slot) ?: return@synchronized null
-            val info = source.info
+            val archive = offlinePackage(slot)?.archive ?: return@synchronized null
+            val info = archive.info
             for (z in min(tile.z, info.maxZoom) downTo max(info.minZoom, tile.z - 7)) {
                 val shift = tile.z - z
-                val x = tile.x shr shift
-                val tms = (1 shl z) - 1 - (tile.y shr shift)
-                val image = source.db.rawQuery(
-                    "SELECT tile_data FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=? LIMIT 1",
-                    arrayOf(z.toString(), x.toString(), tms.toString())
-                ).use { if (it.moveToFirst()) decode(it.getBlob(0)) else null } ?: continue
+                val key = Tile(z, tile.x shr shift, tile.y shr shift)
+                val image = archive.tile(key)?.let(::decode) ?: continue
                 if (shift == 0) return@synchronized image
                 val divisions = 1 shl shift
                 val left = tile.x % divisions * image.width / divisions

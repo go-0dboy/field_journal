@@ -24,7 +24,25 @@ jobs:
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
       - name: Install Android SDK
-        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.1'
+        run: |
+          sdk="${ANDROID_HOME:-$RUNNER_TEMP/android-sdk}"
+          manager="$(command -v sdkmanager || true)"
+          if [ -z "$manager" ] && [ -x "$sdk/cmdline-tools/latest/bin/sdkmanager" ]; then
+            manager="$sdk/cmdline-tools/latest/bin/sdkmanager"
+          fi
+          if [ -z "$manager" ]; then
+            archive="$RUNNER_TEMP/android-command-line-tools.zip"
+            curl --fail --location --retry 3 \
+              https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip \
+              --output "$archive"
+            unzip -q "$archive" -d "$RUNNER_TEMP/android-tools"
+            mkdir -p "$sdk/cmdline-tools"
+            mv "$RUNNER_TEMP/android-tools/cmdline-tools" "$sdk/cmdline-tools/field-journal"
+            manager="$sdk/cmdline-tools/field-journal/bin/sdkmanager"
+          fi
+          (yes || true) | "$manager" --sdk_root="$sdk" --licenses >/dev/null
+          "$manager" --sdk_root="$sdk" 'platform-tools' 'platforms;android-35' 'build-tools;35.0.1'
+          printf 'ANDROID_HOME=%s\nANDROID_SDK_ROOT=%s\n' "$sdk" "$sdk" >> "$GITHUB_ENV"
       - name: Restore preview signing key
         uses: actions/cache@v4
         with:

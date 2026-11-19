@@ -1,6 +1,5 @@
 package ru.fieldjournal
 
-import android.app.AlertDialog
 import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
@@ -42,7 +41,7 @@ class EditorNavigationTest {
             root.input("Заголовок").setText("Повторный обход")
             root.action("Сохранить и закрыть").performClick()
             assertFalse(controller.get().store.notes().any { it.title == "Повторный обход" })
-            chooseConfirmation(AlertDialog.BUTTON_NEGATIVE)
+            chooseConfirmation("Сохранить")
             root.text("Карточка объекта")
             root.text("Сохранено")
             assertTrue(controller.get().store.notes().any { it.siteId == site.id && it.title == "Повторный обход" })
@@ -71,7 +70,10 @@ class EditorNavigationTest {
             root.text("+ Запись").performClick()
             layout(root)
             val save = root.action("Сохранить и закрыть")
-            assertEquals("✓", (save as TextView).text.toString())
+            val back = root.action("Назад")
+            assertEquals(back.width, save.width)
+            assertEquals((back as android.widget.ImageButton).drawable.intrinsicWidth,
+                (save as android.widget.ImageButton).drawable.intrinsicWidth)
             assertNull(root.descendants().filterIsInstance<TextView>().firstOrNull {
                 it.text == "Разделы" || it.text == "Сохранено" || it.text == "Готово"
             })
@@ -83,10 +85,10 @@ class EditorNavigationTest {
             assertEquals("Черновая запись", restored.input("Заголовок").text.toString())
             restored.action("Сохранить и закрыть").performClick()
             assertTrue(activity.store.notes().all { it.id in knownIds })
-            chooseConfirmation(AlertDialog.BUTTON_POSITIVE)
+            chooseConfirmation("Отмена")
             assertEquals("Черновая запись", restored.input("Заголовок").text.toString())
             restored.action("Назад").performClick()
-            chooseConfirmation(AlertDialog.BUTTON_NEUTRAL)
+            chooseConfirmation("Не сохранять")
             restored.text("Дневник")
             assertTrue(activity.store.notes().all { it.id in knownIds })
         } finally {
@@ -107,7 +109,7 @@ class EditorNavigationTest {
             root.descendants().filterIsInstance<JournalEditor>().single().stageAttachment(attachment)
             assertEquals(original, activity.store.site(original.id))
             root.action("Назад").performClick()
-            chooseConfirmation(AlertDialog.BUTTON_NEUTRAL)
+            chooseConfirmation("Не сохранять")
             assertEquals(original, activity.store.site(original.id))
             assertFalse(activity.store.attachmentFile(attachment.id).exists())
         } finally {
@@ -115,8 +117,8 @@ class EditorNavigationTest {
         }
     }
 
-    private fun chooseConfirmation(button: Int) {
-        ShadowAlertDialog.getLatestAlertDialog().getButton(button).performClick()
+    private fun chooseConfirmation(button: String) {
+        ShadowAlertDialog.getLatestAlertDialog().window!!.decorView.text(button).performClick()
         shadowOf(Looper.getMainLooper()).idle()
     }
 

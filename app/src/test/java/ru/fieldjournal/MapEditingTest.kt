@@ -1,6 +1,5 @@
 package ru.fieldjournal
 
-import android.app.AlertDialog
 import android.content.ClipboardManager
 import android.os.Looper
 import android.os.SystemClock
@@ -80,8 +79,11 @@ class MapEditingTest {
             val clipboard = activity.getSystemService(ClipboardManager::class.java)
             root.text("Координаты").performClick()
             val centerDialog = ShadowAlertDialog.getLatestAlertDialog()
-            assertEquals("Отмена", centerDialog.getButton(AlertDialog.BUTTON_POSITIVE).text.toString())
-            centerDialog.getButton(AlertDialog.BUTTON_NEGATIVE).performClick()
+            val prompt = requireNotNull(centerDialog.window).decorView
+            layout(prompt)
+            prompt.text(map.center.display())
+            assertTrue(prompt.text("Отмена").left > prompt.text("Ввести").left)
+            prompt.text("Скопировать").performClick()
             shadowOf(Looper.getMainLooper()).idle()
             assertEquals(map.center.display(), clipboard.primaryClip?.getItemAt(0)?.text.toString())
 
@@ -91,7 +93,7 @@ class MapEditingTest {
             val selected = requireNotNull(map.pointPreview)
             assertNotEquals(map.center, selected)
             root.text("Координаты").performClick()
-            ShadowAlertDialog.getLatestAlertDialog().getButton(AlertDialog.BUTTON_NEGATIVE).performClick()
+            ShadowAlertDialog.getLatestAlertDialog().window!!.decorView.text("Скопировать").performClick()
             shadowOf(Looper.getMainLooper()).idle()
             assertEquals(selected.display(), clipboard.primaryClip?.getItemAt(0)?.text.toString())
             root.text("Установить").performClick()
@@ -106,9 +108,7 @@ class MapEditingTest {
 
     private fun confirmSave(activity: MainActivity) {
         activity.closeEditor()
-        val dialog = ShadowAlertDialog.getLatestAlertDialog()
-        assertEquals("Сохранить", dialog.getButton(AlertDialog.BUTTON_NEGATIVE).text.toString())
-        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).performClick()
+        ShadowAlertDialog.getLatestAlertDialog().window!!.decorView.text("Сохранить").performClick()
         shadowOf(Looper.getMainLooper()).idle()
     }
 

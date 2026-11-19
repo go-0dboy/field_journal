@@ -12,14 +12,14 @@ import android.widget.LinearLayout
 import android.widget.TextView
 
 internal object Palette {
-    val paper = 0xfff6f3e9.toInt()
-    val white = 0xfffffdf6.toInt()
+    val paper = 0xfff4f5f0.toInt()
+    val white = 0xfffffefa.toInt()
     val pine = 0xff184536.toInt()
     val green = 0xff21604c.toInt()
-    val pale = 0xffe4eddf.toInt()
+    val pale = 0xffe5eee5.toInt()
     val ink = 0xff1d2e25.toInt()
     val muted = 0xff55685d.toInt()
-    val border = 0xffd7dfd2.toInt()
+    val border = 0xffdbe2d9.toInt()
     val rust = 0xff96462c.toInt()
 }
 
@@ -48,7 +48,7 @@ internal fun Context.action(
     minimumHeight = dp(48)
     setPadding(dp(12), 0, dp(12), 0)
     background = RippleDrawable(ColorStateList.valueOf(0x254b816d),
-        panel(if (primary) Palette.green else Palette.white, 12, if (primary) 0 else Palette.border), null)
+        panel(if (primary) Palette.green else Palette.white, 16, if (primary) 0 else Palette.border), null)
     if (description != null) contentDescription = description
     isFocusable = true
     accessibilityDelegate = object : View.AccessibilityDelegate() {
@@ -61,14 +61,14 @@ internal fun Context.action(
 }
 
 internal fun Context.edit(hint: String, value: String, lines: Int = 1) = EditText(this).apply {
-    background = panel(Palette.white, 12, Palette.border)
+    background = panel(Palette.white, 15, Palette.border)
     textSize = 16f
     setTextColor(Palette.ink)
     setHintTextColor(Palette.muted)
     this.hint = hint
     setText(value)
     setPadding(dp(12), dp(10), dp(12), dp(10))
-    minHeight = dp(48)
+    minHeight = dp(50)
     inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
     if (lines > 1) {
         inputType = inputType or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
@@ -260,7 +260,7 @@ internal class CatalogRow(context: Context) : LinearLayout(context) {
         orientation = VERTICAL
         setPadding(0, 0, 0, context.dp(7))
         addView(context.horizontal().apply {
-            background = context.panel(Palette.white, 14, Palette.border)
+            background = context.panel(Palette.white, 18, Palette.border)
             minimumHeight = context.dp(68)
             setPadding(context.dp(12), context.dp(10), context.dp(12), context.dp(10))
             addView(symbol, context.dp(39), context.dp(39))
@@ -287,7 +287,7 @@ internal class CatalogRow(context: Context) : LinearLayout(context) {
 internal fun Context.locationAction(click: () -> Unit) =
     android.widget.ImageButton(this).apply {
         contentDescription = "Моё место"
-        background = RippleDrawable(ColorStateList.valueOf(0x254b816d), panel(Palette.white, 12, Palette.border), null)
+        background = RippleDrawable(ColorStateList.valueOf(0x254b816d), panel(Palette.white, 24, Palette.border), null)
         scaleType = android.widget.ImageView.ScaleType.CENTER
         setPadding(0, 0, 0, 0)
         setOnClickListener { click() }
@@ -322,4 +322,52 @@ internal fun Context.locationAction(click: () -> Unit) =
             override fun getOpacity() = PixelFormat.TRANSLUCENT
         }
         setImageDrawable(target)
+    }
+
+internal fun Context.editorAction(done: Boolean, click: () -> Unit) =
+    android.widget.ImageButton(this).apply {
+        contentDescription = if (done) "Сохранить и закрыть" else "Назад"
+        minimumWidth = dp(48)
+        minimumHeight = dp(48)
+        background = RippleDrawable(ColorStateList.valueOf(0x254b816d),
+            panel(if (done) Palette.green else Palette.pale, 24), null)
+        scaleType = android.widget.ImageView.ScaleType.CENTER
+        setPadding(0, 0, 0, 0)
+        setOnClickListener { click() }
+        setImageDrawable(object : android.graphics.drawable.Drawable() {
+            override fun getIntrinsicWidth() = dp(19)
+            override fun getIntrinsicHeight() = dp(19)
+
+            private val pen = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = if (done) Color.WHITE else Palette.pine
+                style = Paint.Style.STROKE
+                strokeWidth = 2f
+                strokeCap = Paint.Cap.ROUND
+                strokeJoin = Paint.Join.ROUND
+            }
+            private val mark = Path().apply {
+                if (done) {
+                    moveTo(3.5f, 9.5f)
+                    lineTo(7.5f, 13.5f)
+                    lineTo(15.5f, 5.5f)
+                } else {
+                    moveTo(11.5f, 4f)
+                    lineTo(6f, 9.5f)
+                    lineTo(11.5f, 15f)
+                }
+            }
+
+            override fun draw(canvas: Canvas) {
+                canvas.save()
+                canvas.translate(bounds.left.toFloat(), bounds.top.toFloat())
+                canvas.scale(bounds.width() / 19f, bounds.height() / 19f)
+                canvas.drawPath(mark, pen)
+                canvas.restore()
+            }
+
+            override fun setAlpha(alpha: Int) { pen.alpha = alpha }
+            override fun setColorFilter(colorFilter: ColorFilter?) { pen.colorFilter = colorFilter }
+            @Deprecated("Drawable opacity is no longer used")
+            override fun getOpacity() = PixelFormat.TRANSLUCENT
+        })
     }

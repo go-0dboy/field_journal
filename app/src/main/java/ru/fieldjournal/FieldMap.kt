@@ -12,7 +12,7 @@ import kotlin.math.*
 
 @android.annotation.SuppressLint("ViewConstructor")
 internal class FieldMap(context: Context, private val tiles: MapTiles) : View(context) {
-    private data class TileKey(val generation: Int, val tile: Tile, val overlay: Boolean)
+    private data class TileKey(val generation: Int, val tile: Tile, val pass: TilePass)
 
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private val scale = resources.displayMetrics.density
@@ -26,7 +26,10 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
     private var offlineInfo: OfflineInfo? = null
     private var layer = tiles.layer
     private var offline = tiles.offline
-    private var attribution = ""
+    private var historyInfo: OfflineInfo? = null
+    private var referenceInfo: OfflineInfo? = null
+    private var onlineReferences = false
+    private var attribution = emptyList<String>()
     var onTap: ((Coordinate, Site?) -> Unit)? = null
     var onMove: ((Coordinate, Double) -> Unit)? = null
     var onVertexTap: ((Int) -> Unit)? = null
@@ -69,8 +72,17 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
     fun refresh() {
         layer = tiles.layer
         offline = tiles.offline
-        offlineInfo = if (offline) tiles.info(layer) else null
-        attribution = tiles.credit(layer, offline)
+        offlineInfo = if (offline) tiles.info(tiles.baseArchive(layer)) else null
+        historyInfo = if (tiles.historicalEnabled) tiles.info(MapPackage.HISTORICAL) else null
+        val showReferences = tiles.showReferences()
+        onlineReferences = showReferences && !offline
+        referenceInfo = if (showReferences && offline) tiles.info(MapPackage.REFERENCES) else null
+        attribution = listOfNotNull(
+            tiles.credit(layer, offline).takeIf(String::isNotBlank),
+            historyInfo?.let { it.attribution.ifBlank { it.name } },
+            referenceInfo?.let { it.attribution.ifBlank { it.name } },
+            "Дороги и подписи © Esri, HERE, Garmin, OpenStreetMap contributors, GIS User Community".takeIf { onlineReferences }
+        ).distinct()
         generation++
         memory.evictAll()
         unavailable.clear()
@@ -218,8 +230,17 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
         super.onDraw(canvas)
         canvas.drawColor(0xffe3e8db.toInt())
         drawGrid(canvas)
-        val hasTiles = drawTiles(canvas)
-        if (offline && !hasTiles) {
+        val baseZoom = if (offline) offlineInfo?.maxZoom else if (layer == MapLayer.STREET) 19 else 22
+        val baseDrawn = baseZoom?.let { drawTiles(canvas, TilePass.BASE, it) } ?: false
+        val historyDrawn = historyInfo?.let {
+            drawTiles(canvas, TilePass.HISTORICAL, it.maxZoom, tiles.historicalOpacity * 255 / 100)
+        } ?: false
+        if (onlineReferences) {
+            drawTiles(canvas, TilePass.ROADS, 19)
+            drawTiles(canvas, TilePass.PLACES, 19)
+        } else referenceInfo?.let { drawTiles(canvas, TilePass.PLACES, it.maxZoom) }
+        val hasTiles = baseDrawn || historyDrawn
+        if (offline && !hasTiles && pending.isEmpty()) {
             val message = if (offlineInfo == null) "Подключите офлайн-карту в разделе «Слои»" else "Для этого участка нет офлайн-тайлов"
             drawLabel(canvas, message, 12 * scale, 23 * scale)
         } else if (!offline && !hasTiles && unavailable.isNotEmpty() && pending.isEmpty()) {
@@ -272,12 +293,28 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
             canvas.drawCircle(p.x, p.y, 7 * scale, paint)
         }
         if (crosshair) drawCrosshair(canvas)
-        drawScale(canvas)
-        if (attribution.isNotBlank()) {
-            paint.textSize = 9 * scale
-            val maxChars = paint.breakText(attribution, true, width - 24 * scale, null)
-            drawLabel(canvas, attribution.take(maxChars), 12 * scale, height - 7 * scale, 9f)
+        val creditLines = attribution.flatMap { credit -> wrapCredit(credit) }
+        drawScale(canvas, creditLines.size)
+        creditLines.forEachIndexed { index, line ->
+            drawLabel(canvas, line, 12 * scale, height - (7 + 11 * (creditLines.lastIndex - index)) * scale, 9f)
         }
+    }
+
+    private fun wrapCredit(credit: String): List<String> {
+        paint.typeface = Typeface.DEFAULT_BOLD
+        paint.textSize = 9 * scale
+        val available = (width - 74 * scale).coerceAtLeast(0f)
+        val lines = mutableListOf<String>()
+        var line = ""
+        for (word in credit.split(Regex("\\s+"))) {
+            val next = if (line.isEmpty()) word else "$line $word"
+            if (line.isNotEmpty() && paint.measureText(next) > available) {
+                lines.add(line)
+                line = word
+            } else line = next
+        }
+        if (line.isNotEmpty()) lines.add(line)
+        return lines.take(2).map { it.take(paint.breakText(it, true, available, null)) }
     }
 
     private fun drawGrid(canvas: Canvas) {
@@ -290,8 +327,7 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
         while (y < height) { canvas.drawLine(0f, y, width.toFloat(), y, paint); y += spacing }
     }
 
-    private fun drawTiles(canvas: Canvas): Boolean {
-        val nativeLimit = if (offline) 22 else if (layer == MapLayer.STREET) 19 else 22
+    private fun drawTiles(canvas: Canvas, pass: TilePass, nativeLimit: Int, alpha: Int = 255): Boolean {
         val z = floor(zoom).toInt().coerceAtMost(nativeLimit)
         val size = world / (1 shl z)
         val count = 1 shl z
@@ -301,32 +337,32 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
         val firstY = floor(top / size).toInt().coerceAtLeast(0)
         val lastX = floor((left + width) / size).toInt()
         val lastY = floor((top + height) / size).toInt().coerceAtMost(count - 1)
+        paint.color = Color.WHITE
+        paint.alpha = alpha
         var drawn = false
         for (y in firstY..lastY) for (x in firstX..lastX) {
             val tile = Tile(z, Math.floorMod(x, count), y)
-            val rect = RectF((x * size - left).toFloat(), (y * size - top).toFloat(),
-                ((x + 1) * size - left + 0.5).toFloat(), ((y + 1) * size - top + 0.5).toFloat())
-            paint.color = Color.WHITE
-            val base = image(tile, false)
-            val fallback = if (base == null) cachedAncestor(tile, false) else null
-            if (base != null) { canvas.drawBitmap(base, null, rect, paint); drawn = true }
-            if (fallback != null) { canvas.drawBitmap(fallback.first, fallback.second, rect, paint); drawn = true }
-            if (!offline && layer == MapLayer.HYBRID) {
-                val label = if (z <= 19) image(tile, true) else {
-                    image(Tile(19, tile.x shr (z - 19), tile.y shr (z - 19)), true)
-                    null
-                }
-                if (label != null) canvas.drawBitmap(label, null, rect, paint)
-                else cachedAncestor(tile, true)?.let { canvas.drawBitmap(it.first, it.second, rect, paint) }
+            val rect = Rect(
+                (x * size - left).roundToInt(), (y * size - top).roundToInt(),
+                ((x + 1) * size - left).roundToInt(), ((y + 1) * size - top).roundToInt()
+            )
+            val bitmap = image(tile, pass)
+            if (bitmap != null) {
+                canvas.drawBitmap(bitmap, null, rect, paint)
+                drawn = true
+            } else cachedAncestor(tile, pass)?.let { (ancestor, source) ->
+                canvas.drawBitmap(ancestor, source, rect, paint)
+                drawn = true
             }
         }
+        paint.alpha = 255
         return drawn
     }
 
-    private fun cachedAncestor(tile: Tile, overlay: Boolean): Pair<Bitmap, Rect>? {
+    private fun cachedAncestor(tile: Tile, pass: TilePass): Pair<Bitmap, Rect>? {
         for (delta in 1..min(tile.z, 5)) {
             val parent = Tile(tile.z - delta, tile.x shr delta, tile.y shr delta)
-            val bitmap = memory.get(TileKey(generation, parent, overlay)) ?: continue
+            val bitmap = memory.get(TileKey(generation, parent, pass)) ?: continue
             val divisions = 1 shl delta
             val stepX = max(1, bitmap.width / divisions)
             val stepY = max(1, bitmap.height / divisions)
@@ -339,9 +375,8 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
         return null
     }
 
-    private fun image(tile: Tile, overlay: Boolean): Bitmap? {
-        if (offline && offlineInfo == null) return null
-        val key = TileKey(generation, tile, overlay)
+    private fun image(tile: Tile, pass: TilePass): Bitmap? {
+        val key = TileKey(generation, tile, pass)
         memory.get(key)?.let { return it }
         val now = android.os.SystemClock.elapsedRealtime()
         if (pending.size >= 48 || key in pending || (unavailable[key] ?: 0L) > now || workers.isShutdown) return null
@@ -351,7 +386,7 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
         val currentTemplate = tiles.customUrl
         workers.execute {
             val image = if (key.generation != generation) null else
-                runCatching { tiles.read(currentLayer, currentOffline, currentTemplate, tile, overlay) }.getOrNull()
+                runCatching { tiles.read(currentLayer, currentOffline, currentTemplate, tile, pass) }.getOrNull()
             post {
                 pending.remove(key)
                 if (key.generation == generation) {
@@ -399,12 +434,12 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
 
     private fun metersPerPixel() = 40075016.686 * cos(Math.toRadians(center.latitude)) / world
 
-    private fun drawScale(canvas: Canvas) {
+    private fun drawScale(canvas: Canvas, creditLines: Int) {
         val approximate = metersPerPixel() * 94 * scale
         val unit = 10.0.pow(floor(log10(approximate)))
         val distance = listOf(1, 2, 5).last { it * unit <= approximate + 1e-10 } * unit
         val x = 12 * scale
-        val y = height - (if (attribution.isBlank()) 13 else 25) * scale
+        val y = height - (13 + 12 * creditLines) * scale
         val w = (distance / metersPerPixel()).toFloat()
         val text = when {
             distance >= 1000 -> "${(distance / 1000).roundToInt()} км"

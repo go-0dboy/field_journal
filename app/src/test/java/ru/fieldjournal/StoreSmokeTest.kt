@@ -89,8 +89,10 @@ class StoreSmokeTest {
     }
 
     private fun acceptSave() {
-        org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog()
-            .getButton(android.app.AlertDialog.BUTTON_NEGATIVE).performClick()
+        val decor = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog().window!!.decorView
+        val matches = ArrayList<android.view.View>()
+        decor.findViewsWithText(matches, "Сохранить", android.view.View.FIND_VIEWS_WITH_TEXT)
+        matches.filterIsInstance<android.widget.TextView>().single { it.text == "Сохранить" }.performClick()
         org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
     }
 
@@ -98,7 +100,7 @@ class StoreSmokeTest {
     fun replacingOfflinePackageUsesNewTiles() {
         val context = RuntimeEnvironment.getApplication()
         val tiles = MapTiles(context)
-        fun install(name: String, color: Int) {
+        fun install(slot: MapPackage, name: String, color: Int) {
             val file = java.io.File(context.cacheDir, "$name.mbtiles")
             android.database.sqlite.SQLiteDatabase.openOrCreateDatabase(file, null).use { db ->
                 db.execSQL("CREATE TABLE metadata (name TEXT, value TEXT)")
@@ -109,16 +111,42 @@ class StoreSmokeTest {
                 val raster = ByteArrayOutputStream().also { bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
                 db.execSQL("INSERT INTO tiles VALUES (4,8,10,?)", arrayOf(raster.toByteArray()))
             }
-            file.inputStream().use { tiles.install(MapLayer.STREET, it) }
+            file.inputStream().use { tiles.install(slot, it) }
         }
 
-        install("first", android.graphics.Color.BLUE)
-        assertEquals("first", tiles.info(MapLayer.STREET)?.name)
+        install(MapPackage.STREET, "first", android.graphics.Color.BLUE)
+        assertEquals("first", tiles.info(MapPackage.STREET)?.name)
         val tile = Tile(4, 8, 5)
-        assertEquals(android.graphics.Color.BLUE, tiles.read(MapLayer.STREET, true, "", tile, false)?.getPixel(10, 10))
-        install("replacement", android.graphics.Color.RED)
-        assertEquals("replacement", tiles.info(MapLayer.STREET)?.name)
-        assertEquals(android.graphics.Color.RED, tiles.read(MapLayer.STREET, true, "", tile, false)?.getPixel(10, 10))
+        assertEquals(android.graphics.Color.BLUE, tiles.read(MapLayer.STREET, true, "", tile, TilePass.BASE)?.getPixel(10, 10))
+        install(MapPackage.STREET, "replacement", android.graphics.Color.RED)
+        assertEquals("replacement", tiles.info(MapPackage.STREET)?.name)
+        assertEquals(android.graphics.Color.RED, tiles.read(MapLayer.STREET, true, "", tile, TilePass.BASE)?.getPixel(10, 10))
+
+        val historicColor = android.graphics.Color.YELLOW
+        val referenceColor = 0x80001824.toInt()
+        install(MapPackage.HISTORICAL, "Архивная карта", historicColor)
+        install(MapPackage.REFERENCES, "Подписи", referenceColor)
+        assertEquals(historicColor, tiles.read(MapLayer.STREET, false, "", tile, TilePass.HISTORICAL)?.getPixel(10, 10))
+        assertEquals(historicColor, tiles.read(MapLayer.SATELLITE, true, "", tile, TilePass.HISTORICAL)?.getPixel(10, 10))
+        assertEquals(referenceColor, tiles.read(MapLayer.STREET, true, "", tile, TilePass.PLACES)?.getPixel(10, 10))
+        assertNull(tiles.read(MapLayer.SATELLITE, true, "", tile, TilePass.BASE))
+        install(MapPackage.SATELLITE, "Спутник", android.graphics.Color.GREEN)
+        assertEquals(android.graphics.Color.GREEN, tiles.read(MapLayer.HYBRID, true, "", tile, TilePass.BASE)?.getPixel(10, 10))
+        install(MapPackage.HYBRID, "Гибрид", android.graphics.Color.BLUE)
+        assertEquals(android.graphics.Color.BLUE, tiles.read(MapLayer.HYBRID, true, "", tile, TilePass.BASE)?.getPixel(10, 10))
+        assertNull(tiles.read(MapLayer.STREET, true, "", Tile(4, 0, 0), TilePass.HISTORICAL))
+
+        tiles.layer = MapLayer.STREET
+        assertFalse(tiles.showReferences())
+        tiles.historicalEnabled = true
+        tiles.historicalOpacity = 40
+        val restored = MapTiles(context)
+        assertEquals(40, restored.historicalOpacity)
+        assertTrue(restored.showReferences())
+        restored.referencesEnabled = false
+        assertFalse(restored.showReferences())
+        restored.historicalEnabled = false
+        restored.referencesEnabled = true
     }
 
     @Test @Config(qualifiers = "w320dp-h600dp")

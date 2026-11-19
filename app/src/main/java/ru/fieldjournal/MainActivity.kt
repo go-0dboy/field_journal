@@ -26,6 +26,8 @@ import android.widget.ListView
 import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.SeekBar
+import android.widget.Switch
 import android.widget.TextView
 import java.io.File
 import java.util.concurrent.Executors
@@ -137,10 +139,15 @@ class MainActivity : Activity() {
             accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         }
         content = FrameLayout(this)
-        nav = horizontal().apply { setPadding(dp(9), dp(7), dp(9), dp(7)); background = panel(Palette.white, 0, Palette.border) }
+        nav = horizontal().apply {
+            setPadding(dp(5), dp(4), dp(5), dp(4))
+            background = panel(Palette.white, 23, Palette.border)
+        }
         root.addView(header, -1, -2)
         root.addView(content, LinearLayout.LayoutParams(-1, 0, 1f))
-        root.addView(nav, -1, -2)
+        root.addView(nav, LinearLayout.LayoutParams(-1, -2).apply {
+            setMargins(dp(10), dp(5), dp(10), dp(6))
+        })
         root.setOnApplyWindowInsetsListener { view, insets ->
             if (android.os.Build.VERSION.SDK_INT >= 30) {
                 val edges = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
@@ -268,9 +275,7 @@ class MainActivity : Activity() {
             draftToOpen = null
             if (draft != null) {
                 setHeader(if (draft.note != null) "Запись дневника" else "Карточка объекта",
-                    action("✓", primary = true, description = "Сохранить и закрыть") {
-                        closeEditor()
-                    }.apply { textSize = 12f; minWidth = dp(48) }, true)
+                    editorAction(done = true) { closeEditor() }, true)
                 updateNavigationVisibility()
                 editView = JournalEditor(this, draft).also { editor ->
                     content.addView(editor)
@@ -318,11 +323,13 @@ class MainActivity : Activity() {
 
     private fun setHeader(title: String, action: View?, back: Boolean = false) {
         val row = horizontal().apply { setPadding(dp(16), dp(8), dp(16), dp(8)) }
-        if (back) row.addView(action("‹", description = "Назад") { closeEditor() }, dp(48), dp(48))
-        val name = label(title, if (back) 19f else 24f, Palette.pine, true)
+        if (back) row.addView(editorAction(done = false) { closeEditor() }, dp(48), dp(48))
+        val name = label(title, if (back) 19f else 25f, Palette.pine, true)
         if (android.os.Build.VERSION.SDK_INT >= 28) name.isAccessibilityHeading = true
         row.addView(name, LinearLayout.LayoutParams(0, -2, 1f).apply { if (back) leftMargin = dp(10) })
-        if (action != null) row.addView(action)
+        if (action != null) row.addView(action, LinearLayout.LayoutParams(if (back) dp(48) else -2, dp(48)).apply {
+            marginStart = dp(8)
+        })
         header.addView(row)
     }
 
@@ -488,16 +495,15 @@ class MainActivity : Activity() {
 
     private fun showCoordinates(point: Coordinate, allowEntry: Boolean = false) {
         val coordinates = point.display()
-        val dialog = AlertDialog.Builder(this)
-            .setTitle(if (allowEntry) "Координаты центра карты" else "Координаты точки")
-            .setMessage("$coordinates\nWGS 84 · широта, долгота")
-            .setNegativeButton("Скопировать") { _, _ ->
+        fieldPrompt(
+            title = if (allowEntry) "Координаты центра карты" else "Координаты точки",
+            primary = PromptAction("Скопировать") {
                 getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Координаты WGS 84", coordinates))
                 if (android.os.Build.VERSION.SDK_INT < 33) message("Координаты скопированы")
-            }
-            .setPositiveButton("Отмена", null)
-        if (allowEntry) dialog.setNeutralButton("Ввести") { _, _ -> manualPoint() }
-        dialog.show()
+            },
+            secondary = if (allowEntry) PromptAction("Ввести", ::manualPoint) else null,
+            coordinates = coordinates
+        )
     }
 
     private fun manualPoint() {
@@ -673,18 +679,141 @@ class MainActivity : Activity() {
     }
 
     private fun chooseLayers() {
-        val options = MapLayer.entries.map { it.title }.toTypedArray()
-        val mode = if (tiles.offline) "Сейчас офлайн" else "Сейчас онлайн"
-        AlertDialog.Builder(this).setTitle("Подложка карты · $mode")
-            .setSingleChoiceItems(options, tiles.layer.ordinal) { dialog, selection ->
-                tiles.layer = MapLayer.entries[selection]
+        val dialog = AlertDialog.Builder(this).create()
+        val body = vertical().apply { setPadding(dp(16), dp(14), dp(16), dp(14)) }
+        body.addView(horizontal().apply {
+            addView(label("Слои карты", 22f, Palette.pine, true).apply {
+                if (android.os.Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(action("Закрыть") { dialog.dismiss() })
+        }, -1, -2)
+        body.addSpace(10)
+        val controls = vertical()
+        body.addView(controls, -1, -2)
+
+        fun redrawControls() {
+            controls.removeAllViews()
+            controls.addView(horizontal().apply {
+                background = panel(Palette.paper, 18)
+                setPadding(dp(3), dp(3), dp(3), dp(3))
+                for (layer in MapLayer.entries) {
+                    addView(action(layer.title, tiles.layer == layer) {
+                        if (tiles.layer != layer) {
+                            tiles.layer = layer
+                            map.refresh()
+                            updateMapStatus()
+                            redrawControls()
+                        }
+                    }.apply {
+                        isSelected = tiles.layer == layer
+                        setPadding(dp(3), 0, dp(3), 0)
+                    }, LinearLayout.LayoutParams(0, -2, 1f).apply {
+                        if (layer != MapLayer.entries.last()) marginEnd = dp(3)
+                    })
+                }
+            }, -1, -2)
+            controls.addSpace(12)
+            val history = tiles.info(MapPackage.HISTORICAL)
+            val references = tiles.info(MapPackage.REFERENCES)
+            val group = vertical().apply {
+                background = panel(Palette.white, 18, Palette.border)
+                setPadding(dp(12), dp(6), dp(12), dp(8))
+            }
+            controls.addView(group, -1, -2)
+            if (history == null) {
+                group.addView(label("Историческая карта", 17f, Palette.pine, true))
+                group.addSpace(6)
+                group.addView(action("Подключить MBTiles") {
+                    dialog.dismiss()
+                    pickDocument(HISTORICAL, "*/*")
+                }, -1, -2)
+            } else {
+                group.addView(layerSwitch("Историческая карта", tiles.historicalEnabled) {
+                    tiles.historicalEnabled = it
+                    map.refresh()
+                    redrawControls()
+                }, -1, -2)
+                group.addView(label(history.name, 14f, Palette.muted))
+                if (tiles.historicalEnabled) {
+                    group.addSpace(8)
+                    val opacityLabel = label("Непрозрачность · ${tiles.historicalOpacity}%", 14f, Palette.ink, true)
+                    group.addView(opacityLabel)
+                    val slider = SeekBar(this).apply {
+                        contentDescription = "Непрозрачность исторической карты"
+                        max = 90
+                        progress = tiles.historicalOpacity - 10
+                        minimumHeight = dp(48)
+                        setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                            override fun onProgressChanged(bar: SeekBar, value: Int, fromUser: Boolean) {
+                                if (!fromUser) return
+                                tiles.historicalOpacity = value + 10
+                                opacityLabel.text = "Непрозрачность · ${tiles.historicalOpacity}%"
+                                map.invalidate()
+                            }
+                            override fun onStartTrackingTouch(bar: SeekBar) = Unit
+                            override fun onStopTrackingTouch(bar: SeekBar) = Unit
+                        })
+                    }
+                    group.addView(slider, -1, -2)
+                }
+                group.addSpace(6)
+                group.addView(horizontal().apply {
+                    addView(action("К участку") {
+                        tiles.historicalEnabled = true
+                        map.refresh()
+                        moveToPackage(history)
+                        dialog.dismiss()
+                    }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(6) })
+                    addView(action("Заменить") {
+                        dialog.dismiss()
+                        pickDocument(HISTORICAL, "*/*")
+                    }, LinearLayout.LayoutParams(0, -2, 1f))
+                }, -1, -2)
+            }
+            if (tiles.layer == MapLayer.HYBRID || tiles.historicalEnabled) {
+                group.addSpace(8)
+                group.addView(layerSwitch("Современные дороги и подписи", tiles.referencesEnabled,
+                    enabled = !tiles.offline || references != null) {
+                    tiles.referencesEnabled = it
+                    map.refresh()
+                }, -1, -2)
+                if (tiles.offline) {
+                    group.addView(label(references?.name ?: "Для офлайна нужен прозрачный слой MBTiles", 13f, Palette.muted))
+                    group.addSpace(6)
+                    group.addView(action(if (references == null) "Подключить подписи" else "Заменить подписи") {
+                        dialog.dismiss()
+                        pickDocument(REFERENCES, "*/*")
+                    }, -1, -2)
+                }
+            }
+            controls.addSpace(10)
+            controls.addView(layerSwitch("Офлайн-режим", tiles.offline) {
+                toggleOffline()
+                redrawControls()
+            }, -1, -2)
+            controls.addView(action("Настройки карт") {
                 dialog.dismiss()
-                map.refresh()
-                updateMapStatus()
-            }.setNeutralButton("Настроить") { _, _ -> switch(Tab.SETTINGS) }
-            .setNegativeButton(if (tiles.offline) "В онлайн" else "В офлайн") { _, _ -> toggleOffline() }
-            .setPositiveButton("Закрыть", null).show()
+                switch(Tab.SETTINGS)
+            }, -1, -2)
+        }
+
+        redrawControls()
+        dialog.setView(ScrollView(this).apply { addView(body) }, 0, 0, 0, 0)
+        dialog.showFieldSheet()
     }
+
+    @Suppress("UseSwitchCompatOrMaterialCode")
+    private fun layerSwitch(title: String, checked: Boolean, enabled: Boolean = true, change: (Boolean) -> Unit) =
+        Switch(this).apply {
+            text = title
+            textSize = 15f
+            minimumHeight = dp(48)
+            switchPadding = dp(8)
+            setTextColor(if (enabled) Palette.ink else Palette.muted)
+            isChecked = checked && enabled
+            isEnabled = enabled
+            setOnCheckedChangeListener { _, value -> change(value) }
+        }
 
     private fun toggleOffline() {
         tiles.offline = !tiles.offline
@@ -840,8 +969,12 @@ class MainActivity : Activity() {
         card(list, if (tiles.offline) "Режим · офлайн" else "Режим · онлайн",
             if (tiles.offline) "Нажмите, чтобы подключить онлайн-подложки" else "Нажмите для работы с локальными подложками") { toggleOffline() }
         for (layer in MapLayer.entries) {
-            val info = tiles.info(layer)
-            val detail = info?.let { "${it.name} · масштаб ${it.minZoom}–${it.maxZoom}" } ?: "Подключить растровый файл MBTiles"
+            val info = tiles.info(layer.archive)
+            val detail = when {
+                info != null -> "${info.name} · масштаб ${info.minZoom}–${info.maxZoom}"
+                layer == MapLayer.HYBRID && tiles.info(MapPackage.SATELLITE) != null -> "Используется офлайн-спутник · можно подключить свой MBTiles"
+                else -> "Подключить растровый файл MBTiles"
+            }
             card(list, "Офлайн · ${layer.title}", detail) {
                 if (info == null) pickMap(layer) else {
                     AlertDialog.Builder(this).setTitle(info.name)
@@ -849,6 +982,15 @@ class MainActivity : Activity() {
                         .setNeutralButton("Заменить файл") { _, _ -> pickMap(layer) }
                         .setNegativeButton("Открыть карту") { _, _ -> activateMap(layer, info) }.show()
                 }
+            }
+        }
+        for ((slot, title, request) in listOf(
+            Triple(MapPackage.HISTORICAL, "Историческая карта", HISTORICAL),
+            Triple(MapPackage.REFERENCES, "Офлайн · дороги и подписи", REFERENCES)
+        )) {
+            val archive = tiles.info(slot)
+            card(list, title, archive?.name ?: "Подключить растровый файл MBTiles") {
+                pickDocument(request, "*/*")
             }
         }
         card(list, "Свой онлайн-источник XYZ",
@@ -900,8 +1042,12 @@ class MainActivity : Activity() {
         map.refresh()
         tab = Tab.MAP
         render()
-        info.center?.let { map.moveTo(it, (info.minZoom + 1.0).coerceAtMost(info.maxZoom.toDouble())) }
+        moveToPackage(info)
         updateMapStatus()
+    }
+
+    private fun moveToPackage(info: OfflineInfo) {
+        info.center?.let { map.moveTo(it, (info.minZoom + 1.0).coerceAtMost(info.maxZoom.toDouble())) }
     }
 
     private fun pickDocument(request: Int, mime: String) {
@@ -973,19 +1119,20 @@ class MainActivity : Activity() {
             editorIsNote -> "Сохранить новую запись?"
             else -> "Сохранить новый объект?"
         }
-        AlertDialog.Builder(this).setTitle(question)
-            .setNegativeButton("Сохранить") { _, _ ->
+        fieldPrompt(
+            title = question,
+            primary = PromptAction("Сохранить") {
                 if (editor.saveConfirmed()) {
                     after()
                     message("Сохранено")
                 }
-            }
-            .setNeutralButton("Не сохранять") { _, _ ->
+            },
+            secondary = PromptAction("Не сохранять") {
                 editor.discardDraft()
                 after()
-            }
-            .setPositiveButton("Отмена", null)
-            .show()
+            },
+            destructive = true
+        )
     }
 
     private fun detachEditor() {
@@ -1088,10 +1235,27 @@ class MainActivity : Activity() {
                 pendingMap = null
                 if (resultCode != RESULT_OK || uri == null || layer == null) return
                 withIo("Установка офлайн-карты", {
-                    requireNotNull(contentResolver.openInputStream(uri)).use { tiles.install(layer, it) }
+                    requireNotNull(contentResolver.openInputStream(uri)).use { tiles.install(layer.archive, it) }
                 }) {
                     activateMap(layer, it)
                     message("Офлайн-карта установлена")
+                }
+            }
+            HISTORICAL, REFERENCES -> {
+                if (resultCode != RESULT_OK || uri == null) return
+                val historic = requestCode == HISTORICAL
+                val slot = if (historic) MapPackage.HISTORICAL else MapPackage.REFERENCES
+                withIo(if (historic) "Установка исторической карты" else "Установка слоя подписей", {
+                    requireNotNull(contentResolver.openInputStream(uri)).use { tiles.install(slot, it) }
+                }) { info ->
+                    if (historic) tiles.historicalEnabled = true else tiles.referencesEnabled = true
+                    map.refresh()
+                    if (historic) {
+                        tab = Tab.MAP
+                        render()
+                        moveToPackage(info)
+                    } else if (tab == Tab.SETTINGS) render()
+                    message(if (historic) "Историческая карта подключена" else "Офлайн-подписи подключены")
                 }
             }
             IMPORT -> {
@@ -1216,6 +1380,8 @@ class MainActivity : Activity() {
         private const val IMPORT = 14
         private const val BACKUP = 15
         private const val GEOJSON = 16
+        private const val HISTORICAL = 17
+        private const val REFERENCES = 18
         private val io = Executors.newSingleThreadExecutor()
     }
 }

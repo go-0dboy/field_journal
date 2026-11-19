@@ -11,9 +11,14 @@ import java.net.HttpURLConnection
 import java.net.URL
 import kotlin.math.*
 
-internal enum class MapLayer(val title: String) {
-    STREET("Карта"), SATELLITE("Спутник"), HYBRID("Гибрид")
+internal enum class MapPackage { STREET, SATELLITE, HYBRID, HISTORICAL, REFERENCES }
+
+internal enum class MapLayer(val title: String, val archive: MapPackage) {
+    STREET("Карта", MapPackage.STREET), SATELLITE("Спутник", MapPackage.SATELLITE),
+    HYBRID("Гибрид", MapPackage.HYBRID)
 }
+
+internal enum class TilePass { BASE, HISTORICAL, ROADS, PLACES }
 
 internal data class Tile(val z: Int, val x: Int, val y: Int)
 
@@ -41,6 +46,18 @@ internal class MapTiles(context: Context) {
         get() = settings.getString("credit", "").orEmpty()
         set(value) { settings.edit().putString("credit", value).apply() }
 
+    var historicalEnabled: Boolean
+        get() = settings.getBoolean("historicalEnabled", false)
+        set(value) { settings.edit().putBoolean("historicalEnabled", value).apply() }
+    var historicalOpacity: Int
+        get() = settings.getInt("historicalOpacity", 75)
+        set(value) { settings.edit().putInt("historicalOpacity", value.coerceIn(10, 100)).apply() }
+    var referencesEnabled: Boolean
+        get() = settings.getBoolean("referencesEnabled", true)
+        set(value) { settings.edit().putBoolean("referencesEnabled", value).apply() }
+
+    fun showReferences() = referencesEnabled && (layer == MapLayer.HYBRID || historicalEnabled)
+
     fun setViewport(center: Coordinate, zoom: Double) {
         settings.edit().putString("latitude", center.latitude.toString())
             .putString("longitude", center.longitude.toString()).putString("zoom", zoom.toString()).apply()
@@ -52,22 +69,25 @@ internal class MapTiles(context: Context) {
     ) to settings.getString("zoom", "5.0")!!.toDouble()
 
     private data class Package(val db: SQLiteDatabase, val info: OfflineInfo)
-    private val offlinePackages = mutableMapOf<MapLayer, Package>()
+    private val offlinePackages = mutableMapOf<MapPackage, Package>()
     private val packageLock = Any()
 
-    private fun file(layer: MapLayer) = File(folder, "${layer.name}.mbtiles")
+    private fun file(slot: MapPackage) = File(folder, "${slot.name}.mbtiles")
 
-    fun info(layer: MapLayer): OfflineInfo? = synchronized(packageLock) {
-        runCatching { offlinePackage(layer)?.info }.getOrNull()
+    fun baseArchive(layer: MapLayer) =
+        if (layer == MapLayer.HYBRID && !file(MapPackage.HYBRID).isFile) MapPackage.SATELLITE else layer.archive
+
+    fun info(slot: MapPackage): OfflineInfo? = synchronized(packageLock) {
+        runCatching { offlinePackage(slot)?.info }.getOrNull()
     }
 
-    private fun offlinePackage(layer: MapLayer): Package? {
-        offlinePackages[layer]?.let { return it }
-        val file = file(layer)
+    private fun offlinePackage(slot: MapPackage): Package? {
+        offlinePackages[slot]?.let { return it }
+        val file = file(slot)
         if (!file.isFile) return null
         val db = open(file)
         try {
-            return Package(db, readInfo(db)).also { offlinePackages[layer] = it }
+            return Package(db, readInfo(db)).also { offlinePackages[slot] = it }
         } catch (e: Exception) {
             db.close()
             throw e
@@ -83,7 +103,9 @@ internal class MapTiles(context: Context) {
         require(metadata["format"]?.lowercase() in setOf("png", "jpg", "jpeg", "webp")) {
             "Для офлайн-карты нужны растровые MBTiles (PNG, JPEG или WebP)"
         }
-        val range = db.rawQuery("SELECT MIN(zoom_level), MAX(zoom_level) FROM tiles", null).use { cursor ->
+        val range = db.rawQuery(
+            "SELECT (SELECT MIN(zoom_level) FROM tiles), (SELECT MAX(zoom_level) FROM tiles)", null
+        ).use { cursor ->
             check(cursor.moveToFirst() && !cursor.isNull(0)) { "В MBTiles нет тайлов" }
             cursor.getInt(0) to cursor.getInt(1)
         }
@@ -111,20 +133,28 @@ internal class MapTiles(context: Context) {
             range.first, range.second, point)
     }
 
-    fun install(layer: MapLayer, input: InputStream): OfflineInfo {
+    fun install(slot: MapPackage, input: InputStream): OfflineInfo {
         val temp = File(folder, "import-${newId()}.mbtiles")
         try {
             temp.outputStream().use { input.copyLimited(it, 8L * 1024 * 1024 * 1024) }
             val info = open(temp).use { db ->
                 val result = readInfo(db)
                 db.rawQuery("SELECT tile_data FROM tiles LIMIT 1", null).use {
-                    check(it.moveToFirst() && decode(it.getBlob(0)) != null) { "Не удалось прочитать растровый тайл" }
+                    require(it.moveToFirst()) { "В MBTiles нет тайлов" }
+                    val bitmap = requireNotNull(decode(it.getBlob(0))) { "Не удалось прочитать растровый тайл" }
+                    try {
+                        require(slot != MapPackage.REFERENCES || bitmap.hasAlpha()) {
+                            "Для подписей нужен прозрачный растр PNG или WebP"
+                        }
+                    } finally {
+                        bitmap.recycle()
+                    }
                 }
                 result
             }
             synchronized(packageLock) {
-                offlinePackages.remove(layer)?.db?.close()
-                check(temp.renameTo(file(layer))) { "Не удалось установить офлайн-карту" }
+                offlinePackages.remove(slot)?.db?.close()
+                check(temp.renameTo(file(slot))) { "Не удалось установить слой карты" }
             }
             return info
         } finally {
@@ -133,23 +163,27 @@ internal class MapTiles(context: Context) {
     }
 
     fun credit(layer: MapLayer, offline: Boolean): String = if (offline) {
-        info(layer)?.attribution?.ifBlank { "Локальный архив MBTiles" } ?: ""
+        info(baseArchive(layer))?.attribution?.ifBlank { "Локальный архив MBTiles" } ?: ""
     } else when (layer) {
         MapLayer.STREET -> if (customUrl.isBlank()) "© OpenStreetMap contributors" else customCredit
-        MapLayer.SATELLITE -> "© Esri, Maxar, Earthstar Geographics, GIS User Community"
-        MapLayer.HYBRID -> "© Esri, Maxar, Earthstar Geographics, GIS User Community • Esri Reference"
+        MapLayer.SATELLITE -> "© Esri, Vantor, Earthstar Geographics, GIS User Community"
+        MapLayer.HYBRID -> "© Esri, Vantor, Earthstar Geographics, GIS User Community"
     }
 
-    fun read(layer: MapLayer, offline: Boolean, urls: String, tile: Tile, overlay: Boolean): Bitmap? {
-        if (offline) return if (overlay) null else readOffline(layer, tile)
-        val worldImagery = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
-        val labels = "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}"
-        val template = when {
-            overlay -> labels
-            layer == MapLayer.STREET -> urls.ifBlank { "https://tile.openstreetmap.org/{z}/{x}/{y}.png" }
-            else -> worldImagery
+    fun read(layer: MapLayer, offline: Boolean, urls: String, tile: Tile, pass: TilePass): Bitmap? {
+        if (pass == TilePass.HISTORICAL) return readOffline(MapPackage.HISTORICAL, tile)
+        if (offline) return when (pass) {
+            TilePass.BASE -> readOffline(baseArchive(layer), tile)
+            TilePass.PLACES -> readOffline(MapPackage.REFERENCES, tile)
+            else -> null
         }
-        if (tile.z > if (overlay) 19 else if (layer == MapLayer.STREET) 19 else 22) return null
+        val server = "https://server.arcgisonline.com/ArcGIS/rest/services"
+        val template = when (pass) {
+            TilePass.ROADS -> "$server/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}"
+            TilePass.PLACES -> "$server/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}"
+            else -> if (layer == MapLayer.STREET) urls.ifBlank { "https://tile.openstreetmap.org/{z}/{x}/{y}.png" }
+                else "$server/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+        }
         val connection = URL(template.replace("{z}", tile.z.toString()).replace("{x}", tile.x.toString())
             .replace("{y}", tile.y.toString())).openConnection() as HttpURLConnection
         return try {
@@ -166,9 +200,9 @@ internal class MapTiles(context: Context) {
         }
     }
 
-    private fun readOffline(layer: MapLayer, tile: Tile): Bitmap? {
+    private fun readOffline(slot: MapPackage, tile: Tile): Bitmap? {
         return synchronized(packageLock) {
-            val source = offlinePackage(layer) ?: return@synchronized null
+            val source = offlinePackage(slot) ?: return@synchronized null
             val info = source.info
             for (z in min(tile.z, info.maxZoom) downTo max(info.minZoom, tile.z - 7)) {
                 val shift = tile.z - z

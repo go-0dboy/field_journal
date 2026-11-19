@@ -283,3 +283,43 @@ internal class CatalogRow(context: Context) : LinearLayout(context) {
             if (site.area) areaLabel(areaSquareMeters(site.vertices)) else null).joinToString(" · ")
     }
 }
+
+internal fun Context.locationAction(click: () -> Unit) =
+    android.widget.ImageButton(this).apply {
+        contentDescription = "Моё место"
+        background = RippleDrawable(ColorStateList.valueOf(0x254b816d), panel(Palette.white, 12, Palette.border), null)
+        scaleType = android.widget.ImageView.ScaleType.CENTER
+        setPadding(0, 0, 0, 0)
+        setOnClickListener { click() }
+        val target = object : android.graphics.drawable.Drawable() {
+            override fun getIntrinsicWidth() = dp(24)
+            override fun getIntrinsicHeight() = dp(24)
+
+            private val pen = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Palette.pine
+                strokeWidth = 2f
+                strokeCap = Paint.Cap.ROUND
+            }
+
+            override fun draw(canvas: Canvas) {
+                canvas.save()
+                canvas.translate(bounds.exactCenterX(), bounds.exactCenterY())
+                canvas.scale(bounds.width() / 24f, bounds.height() / 24f)
+                pen.style = Paint.Style.STROKE
+                canvas.drawCircle(0f, 0f, 8f, pen)
+                canvas.drawLine(0f, -11f, 0f, -8f, pen)
+                canvas.drawLine(0f, 8f, 0f, 11f, pen)
+                canvas.drawLine(-11f, 0f, -8f, 0f, pen)
+                canvas.drawLine(8f, 0f, 11f, 0f, pen)
+                pen.style = Paint.Style.FILL
+                canvas.drawCircle(0f, 0f, 3.5f, pen)
+                canvas.restore()
+            }
+
+            override fun setAlpha(alpha: Int) { pen.alpha = alpha }
+            override fun setColorFilter(colorFilter: ColorFilter?) { pen.colorFilter = colorFilter }
+            @Deprecated("Drawable opacity is no longer used")
+            override fun getOpacity() = PixelFormat.TRANSLUCENT
+        }
+        setImageDrawable(target)
+    }

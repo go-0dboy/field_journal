@@ -2,7 +2,7 @@ package ru.fieldjournal
 
 import android.app.AlertDialog
 import android.app.DatePickerDialog
-import android.app.TimePickerDialog
+import android.content.DialogInterface
 import android.os.Handler
 import android.os.Looper
 import android.text.Editable
@@ -13,6 +13,7 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.TimePicker
 import java.time.Instant
 import java.time.ZoneId
 
@@ -91,7 +92,7 @@ internal class JournalEditor(
         val names = sections.keys.toTypedArray()
         AlertDialog.Builder(activity).setTitle("Разделы карточки").setItems(names) { _, index ->
             scroll.smoothScrollTo(0, requireNotNull(sections[names[index]]).top)
-        }.show()
+        }.setPositiveButton("Отмена", null).show()
     }
 
     fun scrollPosition() = scroll.scrollY
@@ -174,7 +175,6 @@ internal class JournalEditor(
                 activity.editGeometry(value)
             }
         }
-        chip(actions, "Панорама") { activity.openPanorama(value.anchor) }
         info.addView(actions, -1, -2)
         body.addView(info, -1, -2)
         section("Описание")
@@ -199,7 +199,7 @@ internal class JournalEditor(
                 1 -> activity.openLink(links.first())
                 else -> AlertDialog.Builder(activity).setTitle("Ссылки").setItems(links.toTypedArray()) { _, i ->
                     activity.openLink(links[i])
-                }.show()
+                }.setPositiveButton("Отмена", null).show()
             }
         }, -1, -2)
         body.addSpace(6)
@@ -235,13 +235,33 @@ internal class JournalEditor(
     private fun pickDate(button: TextView) {
         val zone = ZoneId.systemDefault()
         val initial = Instant.ofEpochMilli(requireNotNull(timestamp)).atZone(zone)
-        DatePickerDialog(activity, { _, year, month, day ->
-            TimePickerDialog(activity, { _, hour, minute ->
-                timestamp = java.time.LocalDateTime.of(year, month + 1, day, hour, minute).atZone(zone).toInstant().toEpochMilli()
-                button.text = dateLabel(requireNotNull(timestamp))
-                changed()
-            }, initial.hour, initial.minute, true).show()
-        }, initial.year, initial.monthValue - 1, initial.dayOfMonth).show()
+        val date = DatePickerDialog(activity, { _, year, month, day ->
+            val time = TimePicker(activity).apply {
+                setIs24HourView(true)
+                hour = initial.hour
+                minute = initial.minute
+            }
+            val dialog = AlertDialog.Builder(activity).setTitle("Время наблюдения").setView(time)
+                .setNegativeButton("Выбрать", null).setPositiveButton("Отмена", null).create()
+            dialog.setOnShowListener {
+                dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener {
+                    if (time.validateInput()) {
+                        time.clearFocus()
+                        timestamp = java.time.LocalDateTime.of(year, month + 1, day, time.hour, time.minute)
+                            .atZone(zone).toInstant().toEpochMilli()
+                        button.text = dateLabel(requireNotNull(timestamp))
+                        changed()
+                        dialog.dismiss()
+                    }
+                }
+            }
+            dialog.show()
+        }, initial.year, initial.monthValue - 1, initial.dayOfMonth)
+        date.setButton(DialogInterface.BUTTON_NEGATIVE, "Выбрать", DialogInterface.OnClickListener { dialog, _ ->
+            date.onClick(dialog, DialogInterface.BUTTON_POSITIVE)
+        })
+        date.setButton(DialogInterface.BUTTON_POSITIVE, "Отмена", null as DialogInterface.OnClickListener?)
+        date.show()
     }
 
     private fun linkTitle(): String {
@@ -257,7 +277,7 @@ internal class JournalEditor(
             linkedSite = sites.getOrNull(index - 1)?.id
             button.text = linkTitle()
             changed()
-        }.show()
+        }.setPositiveButton("Отмена", null).show()
     }
 
     private fun chip(row: LinearLayout, title: String, click: () -> Unit) {

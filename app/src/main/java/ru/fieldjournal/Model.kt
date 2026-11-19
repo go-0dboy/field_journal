@@ -168,7 +168,14 @@ internal data class Note(
 internal fun dateLabel(time: Long): String = DateTimeFormatter.ofPattern("d MMM yyyy, HH:mm", Locale.forLanguageTag("ru"))
     .format(Instant.ofEpochMilli(time).atZone(ZoneId.systemDefault()))
 
-internal fun longitudeDelta(lon: Double, reference: Double) = ((lon - reference + 540.0) % 360.0) - 180.0
+internal fun longitudeDelta(lon: Double, reference: Double): Double {
+    val delta = lon - reference
+    return when {
+        delta >= 180.0 -> delta - 360.0
+        delta < -180.0 -> delta + 360.0
+        else -> delta
+    }
+}
 internal fun wrapLongitude(lon: Double) = ((lon + 180.0) % 360.0 + 360.0) % 360.0 - 180.0
 
 internal fun polygonCenter(points: List<Coordinate>): Coordinate {
@@ -197,29 +204,51 @@ private fun counterclockwise(ring: List<Coordinate>): Boolean {
     return signedArea > 0
 }
 
-internal fun validPolygon(points: List<Coordinate>): Boolean {
-    if (points.size !in 3..2000 || points.distinct().size != points.size || areaSquareMeters(points) < 0.01) return false
+internal enum class BoundaryError(val message: String) {
+    TOO_FEW("Добавьте не менее трёх вершин"),
+    TOO_MANY("Допускается не более 2000 вершин"),
+    REPEATED("Две вершины находятся в одной точке"),
+    NO_AREA("Вершины лежат на одной линии и не образуют область"),
+    CROSSED("Стороны границы пересекаются или накладываются")
+}
+
+internal fun validPolygon(points: List<Coordinate>) = polygonError(points) == null
+
+internal fun polygonError(points: List<Coordinate>): BoundaryError? {
+    if (points.size < 3) return BoundaryError.TOO_FEW
+    if (points.size > 2000) return BoundaryError.TOO_MANY
     val reference = points.first()
     val plane = points.map { longitudeDelta(it.longitude, reference.longitude) to it.latitude - reference.latitude }
-    fun cross(a: Pair<Double, Double>, b: Pair<Double, Double>, c: Pair<Double, Double>) =
-        (b.first - a.first) * (c.second - a.second) - (b.second - a.second) * (c.first - a.first)
-    fun intersects(i: Int, j: Int): Boolean {
+    if (plane.distinct().size != plane.size) return BoundaryError.REPEATED
+
+    fun orientation(a: Pair<Double, Double>, b: Pair<Double, Double>, c: Pair<Double, Double>): Int {
+        val left = (b.first - a.first) * (c.second - a.second)
+        val right = (b.second - a.second) * (c.first - a.first)
+        val cross = left - right
+        if (abs(cross) <= 4 * Math.ulp(max(abs(left), abs(right)))) return 0
+        return if (cross < 0) -1 else 1
+    }
+
+    if (plane.drop(2).all { orientation(plane[0], plane[1], it) == 0 }) return BoundaryError.NO_AREA
+
+    for (i in plane.indices) {
         val a = plane[i]
         val b = plane[(i + 1) % plane.size]
-        val c = plane[j]
-        val d = plane[(j + 1) % plane.size]
-        val boundingBoxesOverlap = max(min(a.first, b.first), min(c.first, d.first)) <= min(max(a.first, b.first), max(c.first, d.first)) &&
-            max(min(a.second, b.second), min(c.second, d.second)) <= min(max(a.second, b.second), max(c.second, d.second))
-        return boundingBoxesOverlap && cross(a, b, c) * cross(a, b, d) <= 0 &&
-            cross(c, d, a) * cross(c, d, b) <= 0
-    }
-    for (i in plane.indices) {
+        val next = plane[(i + 2) % plane.size]
+        val dot = (a.first - b.first) * (next.first - b.first) + (a.second - b.second) * (next.second - b.second)
+        if (orientation(a, b, next) == 0 && dot > 0) return BoundaryError.CROSSED
+
         for (j in i + 2 until plane.size) {
             if (i == 0 && j == plane.lastIndex) continue
-            if (intersects(i, j)) return false
+            val c = plane[j]
+            val d = plane[(j + 1) % plane.size]
+            if (max(min(a.first, b.first), min(c.first, d.first)) > min(max(a.first, b.first), max(c.first, d.first)) ||
+                max(min(a.second, b.second), min(c.second, d.second)) > min(max(a.second, b.second), max(c.second, d.second))) continue
+            if (orientation(a, b, c) * orientation(a, b, d) <= 0 &&
+                orientation(c, d, a) * orientation(c, d, b) <= 0) return BoundaryError.CROSSED
         }
     }
-    return true
+    return null
 }
 
 internal fun areaLabel(squareMeters: Double) = if (squareMeters >= 10000)

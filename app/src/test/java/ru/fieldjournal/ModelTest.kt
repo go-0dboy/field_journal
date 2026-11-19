@@ -27,6 +27,19 @@ class ModelTest {
         assertTrue(areaSquareMeters(rectangle) in 630_000.0..650_000.0)
     }
 
+    @Test fun smallBoundaryIsValidAndDegenerateBoundariesHaveDistinctErrors() {
+        val a = Coordinate(59.0, 33.0)
+        val b = Coordinate(59.0, 33.0000001)
+        val c = Coordinate(59.0000001, 33.0000001)
+        val d = Coordinate(59.0000001, 33.0)
+        assertNull(polygonError(listOf(a, b, c, d)))
+        assertEquals(BoundaryError.TOO_FEW, polygonError(listOf(a, b)))
+        assertEquals(BoundaryError.REPEATED, polygonError(listOf(a, b, a)))
+        assertEquals(BoundaryError.NO_AREA, polygonError(listOf(a, b, Coordinate(59.0, 33.0000002))))
+        assertEquals(BoundaryError.CROSSED, polygonError(listOf(a, c, b, d)))
+        assertEquals(BoundaryError.CROSSED, polygonError(listOf(a, b, Coordinate(59.0, 33.00000005), d)))
+    }
+
     @Test fun smallDatelinePolygonStaysSmall() {
         val points = listOf(Coordinate(59.0, 179.999), Coordinate(59.0, -179.999),
             Coordinate(59.001, -179.999), Coordinate(59.001, 179.999))

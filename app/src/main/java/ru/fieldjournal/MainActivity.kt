@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -57,6 +58,7 @@ class MainActivity : Activity() {
     private var editView: JournalEditor? = null
     private var drawMode = DrawMode.NONE
     private var geometrySite: String? = null
+    private var selectedPoint: Coordinate? = null
     private val vertices = mutableListOf<Coordinate>()
     private var keyboardVisible = false
     private var catalogIndex = 0
@@ -88,6 +90,7 @@ class MainActivity : Activity() {
             editorIsNote = it.getBoolean("isNote")
             drawMode = DrawMode.valueOf(it.getString("draw", DrawMode.NONE.name))
             geometrySite = it.getString("geometrySite")
+            it.getDoubleArray("selectedPoint")?.let { point -> selectedPoint = Coordinate(point[0], point[1]) }
             it.getDoubleArray("vertices")?.toList()?.chunked(2)?.forEach { vertex ->
                 vertices.add(Coordinate(vertex[0], vertex[1]))
             }
@@ -150,6 +153,7 @@ class MainActivity : Activity() {
         out.putBoolean("isNote", editorIsNote)
         out.putString("draw", drawMode.name)
         out.putString("geometrySite", geometrySite)
+        selectedPoint?.let { out.putDoubleArray("selectedPoint", doubleArrayOf(it.latitude, it.longitude)) }
         out.putDoubleArray("vertices", vertices.flatMap { listOf(it.latitude, it.longitude) }.toDoubleArray())
         out.putString("search", search)
         rememberCatalogPosition()
@@ -282,10 +286,17 @@ class MainActivity : Activity() {
             when (drawMode) {
                 DrawMode.AREA, DrawMode.MOVE_AREA -> addVertex(point)
                 DrawMode.POINT, DrawMode.MOVE_POINT -> {
-                    map.moveTo(point)
-                    updateMapStatus()
+                    selectedPoint = point
+                    updateMapDraft()
                 }
                 DrawMode.NONE -> site?.let { openSite(it.id) }
+            }
+        }
+        map.onVertexTap = { index -> removeVertex(index) }
+        map.onVertexMove = { index, point ->
+            if (index in vertices.indices) {
+                vertices[index] = point
+                updateMapDraft()
             }
         }
         mapStatus = label("", 12f, Palette.pine, true).apply {
@@ -307,11 +318,8 @@ class MainActivity : Activity() {
                 topMargin = dp(10)
                 marginEnd = dp(10)
             })
-            val toolbar = horizontal()
-            toolbar.addView(action("Панорама") { openPanorama(map.center) })
-            val gpsButton = action("Моё место", primary = true) { requestLocation() }
-            toolbar.addView(gpsButton, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(6) })
-            addView(toolbar, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.END).apply {
+            addView(locationAction { requestLocation() }, FrameLayout.LayoutParams(dp(48), dp(48),
+                Gravity.BOTTOM or Gravity.END).apply {
                 bottomMargin = dp(32)
                 marginEnd = dp(10)
             })
@@ -329,9 +337,16 @@ class MainActivity : Activity() {
 
     private fun refreshMap() {
         map.sites = store.sites().filter { filter == null || it.type == filter }
-        map.draft = vertices.toList()
-        map.crosshair = drawMode != DrawMode.NONE
         map.locate = fix
+        updateMapDraft()
+    }
+
+    private fun updateMapDraft() {
+        map.editingGeometry = drawMode != DrawMode.NONE
+        map.draft = vertices.toList()
+        map.pointPreview = selectedPoint
+        map.crosshair = drawMode != DrawMode.NONE && selectedPoint == null
+        updateMapStatus()
     }
 
     private fun updateMapStatus() {
@@ -340,7 +355,7 @@ class MainActivity : Activity() {
             DrawMode.NONE -> fix?.let {
                 "${it.point.display()}  ±${it.accuracy.roundToInt()} м · ${it.source}"
             } ?: "${map.center.display()}  •  ${if (tiles.offline) "Офлайн" else tiles.layer.title}"
-            DrawMode.POINT, DrawMode.MOVE_POINT -> "Точка  ${map.center.display()}"
+            DrawMode.POINT, DrawMode.MOVE_POINT -> "Точка  ${(selectedPoint ?: map.center).display()}"
             DrawMode.AREA, DrawMode.MOVE_AREA -> "Граница  •  ${vertices.size} вершин  •  ${areaLabel(areaSquareMeters(vertices))}"
         }
         mapStatus.text = status
@@ -350,16 +365,21 @@ class MainActivity : Activity() {
         if (vertices.size >= 2000) return message("Достигнут предел: 2000 вершин")
         if (point in vertices) return message("Такая вершина уже добавлена")
         vertices.add(point)
-        map.draft = vertices.toList()
-        updateControls()
+        updateMapDraft()
+    }
+
+    private fun removeVertex(index: Int) {
+        if (index !in vertices.indices) return
+        vertices.removeAt(index)
+        updateMapDraft()
     }
 
     private fun updateControls() {
         updateNavigationVisibility()
         updateMapStatus()
         mapActions.removeAllViews()
-        fun control(text: String, primary: Boolean = false, click: () -> Unit) {
-            val button = action(text, primary, click = click).apply {
+        fun control(text: String, primary: Boolean = false, description: String? = null, click: () -> Unit) {
+            val button = action(text, primary, description, click).apply {
                 textSize = 13f
                 setPadding(dp(3), 0, dp(3), 0)
             }
@@ -369,32 +389,24 @@ class MainActivity : Activity() {
             DrawMode.NONE -> {
                 control("+ Точка", true) { beginDraw(DrawMode.POINT) }
                 control("+ Область") { beginDraw(DrawMode.AREA) }
-                control("Координаты") { manualPoint() }
+                control("Координаты") { showCoordinates(map.center, allowEntry = true) }
             }
             DrawMode.POINT, DrawMode.MOVE_POINT -> {
-                control("Отмена") { cancelDraw() }
-                control("Под прицелом", true) { saveGeometry(listOf(map.center)) }
-                control("По GPS") {
-                    val current = recentFix()
-                    if (current != null) saveGeometry(listOf(current.point), current)
-                    else {
-                        message("Дождитесь актуального местоположения")
-                        requestLocation()
-                    }
+                control("Координаты") { showCoordinates(selectedPoint ?: map.center) }
+                control("Установить", true) {
+                    val point = selectedPoint ?: map.center
+                    saveGeometry(listOf(point), recentFix()?.takeIf { it.point == point })
                 }
+                control("Отмена") { cancelDraw() }
             }
             DrawMode.AREA, DrawMode.MOVE_AREA -> {
-                control("Отмена") { cancelDraw() }
-                control("Вершина") { addVertex(map.center) }
-                control("Отменить") {
-                    if (vertices.isNotEmpty()) vertices.removeAt(vertices.lastIndex)
-                    map.draft = vertices.toList()
-                    updateControls()
-                }
+                control("Добавить", description = "Добавить вершину в центр карты") { addVertex(map.center) }
+                control("Удалить", description = "Удалить последнюю вершину") { removeVertex(vertices.lastIndex) }
                 control("Готово", true) {
-                    if (validPolygon(vertices)) saveGeometry(vertices.toList())
-                    else message("Нужны ≥ 3 разные вершины без самопересечений")
+                    val error = polygonError(vertices)
+                    if (error == null) saveGeometry(vertices.toList()) else message(error.message)
                 }
+                control("Отмена") { cancelDraw() }
             }
         }
     }
@@ -404,8 +416,22 @@ class MainActivity : Activity() {
         refreshMap()
         updateControls()
         message(if (mode == DrawMode.AREA || mode == DrawMode.MOVE_AREA)
-            "Касайтесь карты или добавляйте вершины под прицелом"
-        else "Передвиньте карту или коснитесь нужного места")
+            "Касание добавляет или удаляет вершину. Удерживайте её для перетаскивания"
+        else "Коснитесь места и нажмите «Установить»")
+    }
+
+    private fun showCoordinates(point: Coordinate, allowEntry: Boolean = false) {
+        val coordinates = point.display()
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(if (allowEntry) "Координаты центра карты" else "Координаты точки")
+            .setMessage("$coordinates\nWGS 84 · широта, долгота")
+            .setNegativeButton("Скопировать") { _, _ ->
+                getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Координаты WGS 84", coordinates))
+                if (android.os.Build.VERSION.SDK_INT < 33) message("Координаты скопированы")
+            }
+            .setPositiveButton("Отмена", null)
+        if (allowEntry) dialog.setNeutralButton("Ввести") { _, _ -> manualPoint() }
+        dialog.show()
     }
 
     private fun manualPoint() {
@@ -419,10 +445,10 @@ class MainActivity : Activity() {
         }
         val builder = AlertDialog.Builder(this)
         builder.setTitle("Координаты WGS 84").setView(layout)
-        builder.setNegativeButton("Отмена", null).setPositiveButton("Создать точку", null)
+        builder.setNegativeButton("Создать точку", null).setPositiveButton("Отмена", null)
         val dialog = builder.create()
         dialog.setOnShowListener {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener {
                 submitManualPoint(dialog, lat.text.toString(), lon.text.toString())
             }
         }
@@ -445,6 +471,7 @@ class MainActivity : Activity() {
         drawMode = DrawMode.NONE
         vertices.clear()
         geometrySite = null
+        selectedPoint = null
     }
 
     private fun cancelDraw() {
@@ -485,6 +512,7 @@ class MainActivity : Activity() {
         render()
         map.show(site)
         geometrySite = site.id
+        if (site.area) vertices.addAll(site.vertices) else selectedPoint = site.anchor
         beginDraw(if (site.area) DrawMode.MOVE_AREA else DrawMode.MOVE_POINT)
     }
 
@@ -499,7 +527,7 @@ class MainActivity : Activity() {
     internal fun chooseType(title: String, selection: (ObjectType) -> Unit) {
         val list = vertical().apply { setPadding(dp(12), dp(4), dp(12), dp(6)) }
         val dialog = AlertDialog.Builder(this).setTitle(title).setView(ScrollView(this).apply { addView(list) })
-            .setNegativeButton("Отмена", null).create()
+            .setPositiveButton("Отмена", null).create()
         for (type in objectTypes) {
             val row = horizontal().apply {
                 minimumHeight = dp(49)
@@ -526,7 +554,7 @@ class MainActivity : Activity() {
             centerOnFix = false
             AlertDialog.Builder(this).setTitle("Геолокация выключена")
                 .setMessage("Включите определение местоположения в настройках телефона.")
-                .setNegativeButton("Закрыть", null).setPositiveButton("Настройки") { _, _ ->
+                .setPositiveButton("Закрыть", null).setNegativeButton("Настройки") { _, _ ->
                     startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
                 }.show()
         } else if (centerOnFix) {
@@ -564,19 +592,6 @@ class MainActivity : Activity() {
         }
     }
 
-    internal fun openPanorama(point: Coordinate) {
-        if (tiles.offline) {
-            message("Для панорам переключитесь в онлайн-режим")
-            return
-        }
-        val options = arrayOf("Яндекс Карты", "Google Street View")
-        AlertDialog.Builder(this).setTitle("Панорама улиц").setItems(options) { _, index ->
-            val url = if (index == 0) "https://yandex.ru/maps/?ll=${point.longitude},${point.latitude}&z=17&l=stv"
-            else "https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${point.latitude}%2C${point.longitude}"
-            openLink(url)
-        }.setNegativeButton("Отмена", null).show()
-    }
-
     internal fun openLink(value: String) {
         val uri = Uri.parse(value)
         if (uri.scheme !in listOf("http", "https") || uri.host.isNullOrBlank()) return message("Нужна ссылка HTTP или HTTPS")
@@ -593,8 +608,8 @@ class MainActivity : Activity() {
                 map.refresh()
                 updateMapStatus()
             }.setNeutralButton("Настроить") { _, _ -> switch(Tab.SETTINGS) }
-            .setPositiveButton(if (tiles.offline) "В онлайн" else "В офлайн") { _, _ -> toggleOffline() }
-            .setNegativeButton("Закрыть", null).show()
+            .setNegativeButton(if (tiles.offline) "В онлайн" else "В офлайн") { _, _ -> toggleOffline() }
+            .setPositiveButton("Закрыть", null).show()
     }
 
     private fun toggleOffline() {
@@ -695,7 +710,7 @@ class MainActivity : Activity() {
             filter = objectTypes.getOrNull(choice - 1)?.id
             resetCatalogPosition()
             render()
-        }.show()
+        }.setPositiveButton("Отмена", null).show()
     }
 
     private fun showNotes() {
@@ -756,9 +771,9 @@ class MainActivity : Activity() {
             card(list, "Офлайн · ${layer.title}", detail) {
                 if (info == null) pickMap(layer) else {
                     AlertDialog.Builder(this).setTitle(info.name)
-                        .setNegativeButton("Отмена", null)
+                        .setPositiveButton("Отмена", null)
                         .setNeutralButton("Заменить файл") { _, _ -> pickMap(layer) }
-                        .setPositiveButton("Открыть карту") { _, _ -> activateMap(layer, info) }.show()
+                        .setNegativeButton("Открыть карту") { _, _ -> activateMap(layer, info) }.show()
                 }
             }
         }
@@ -781,9 +796,9 @@ class MainActivity : Activity() {
         box.addSpace(8)
         box.addView(credit)
         val dialog = AlertDialog.Builder(this).setTitle("Онлайн-карта XYZ")
-            .setView(box).setNegativeButton("Отмена", null).setPositiveButton("Применить", null).create()
+            .setView(box).setPositiveButton("Отмена", null).setNegativeButton("Применить", null).create()
         dialog.setOnShowListener {
-            dialog.getButton(-1).setOnClickListener {
+            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener {
                 val template = url.text.toString().trim()
                 val attribution = credit.text.toString().trim()
                 if (!MapTiles.validTemplate(template) || (template.isNotEmpty() && attribution.isEmpty())) {
@@ -874,9 +889,9 @@ class MainActivity : Activity() {
         if (!clearEditor(save)) {
             AlertDialog.Builder(this).setTitle("Правки не сохранены")
                 .setMessage("Можно повторить запись или остаться в карточке.")
-                .setPositiveButton("Повторить") { _, _ -> closeEditor() }
+                .setNegativeButton("Повторить") { _, _ -> closeEditor() }
                 .setNeutralButton("Выйти без записи") { _, _ -> closeEditor(save = false) }
-                .setNegativeButton("Остаться", null)
+                .setPositiveButton("Остаться", null)
                 .show()
             return
         }
@@ -1036,8 +1051,8 @@ class MainActivity : Activity() {
     }
 
     internal fun confirm(title: String, text: String, yes: () -> Unit) {
-        AlertDialog.Builder(this).setTitle(title).setMessage(text).setNegativeButton("Отмена", null)
-            .setPositiveButton("Подтвердить") { _, _ -> yes() }.show()
+        AlertDialog.Builder(this).setTitle(title).setMessage(text).setPositiveButton("Отмена", null)
+            .setNegativeButton("Подтвердить") { _, _ -> yes() }.show()
     }
 
     internal fun message(text: String) {

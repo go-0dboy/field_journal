@@ -29,6 +29,20 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
     private var attribution = ""
     var onTap: ((Coordinate, Site?) -> Unit)? = null
     var onMove: ((Coordinate, Double) -> Unit)? = null
+    var onVertexTap: ((Int) -> Unit)? = null
+    var onVertexMove: ((Int, Coordinate) -> Unit)? = null
+    var pointPreview: Coordinate? = null
+        set(value) { field = value; invalidate() }
+    var editingGeometry = false
+        set(value) {
+            if (field == value) return
+            field = value
+            drag = null
+            gestures.setOnDoubleTapListener(if (value) null else gestureListener)
+        }
+
+    private data class VertexDrag(val index: Int, val offset: PointF, var point: Coordinate)
+    private var drag: VertexDrag? = null
     var sites: List<Site> = emptyList()
         set(value) { field = value; invalidate() }
     var draft: List<Coordinate> = emptyList()
@@ -93,7 +107,21 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
         (height / 2.0 + mercator(point.latitude) * world - rootY).toFloat()
     )
 
-    private val gestures = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
+    private fun vertexAt(x: Float, y: Float): Int? {
+        var nearest: Int? = null
+        var distance = 20 * scale
+        for ((index, point) in draft.withIndex()) {
+            val p = pixel(point)
+            val candidate = hypot(p.x - x, p.y - y)
+            if (candidate <= distance) {
+                nearest = index
+                distance = candidate
+            }
+        }
+        return nearest
+    }
+
+    private val gestureListener = object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent) = true
         override fun onScroll(first: MotionEvent?, next: MotionEvent, distanceX: Float, distanceY: Float): Boolean {
             if (!scaler.isInProgress) moveTo(coordinateAt(width / 2f + distanceX, height / 2f + distanceY))
@@ -103,7 +131,23 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
             zoomAt(e.x, e.y, 1.0)
             return true
         }
+        override fun onSingleTapUp(e: MotionEvent): Boolean {
+            if (!editingGeometry) return false
+            performClick()
+            val index = vertexAt(e.x, e.y)
+            if (index == null) onTap?.invoke(coordinateAt(e.x, e.y), null)
+            else onVertexTap?.invoke(index)
+            return true
+        }
+        override fun onLongPress(e: MotionEvent) {
+            if (!editingGeometry || onVertexMove == null) return
+            val index = vertexAt(e.x, e.y) ?: return
+            val pixel = pixel(draft[index])
+            drag = VertexDrag(index, PointF(pixel.x - e.x, pixel.y - e.y), draft[index])
+            invalidate()
+        }
         override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+            if (editingGeometry) return false
             performClick()
             val site = sites.firstOrNull {
                 val p = pixel(it.anchor)
@@ -113,7 +157,8 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
             onTap?.invoke(coordinateAt(e.x, e.y), site)
             return true
         }
-    })
+    }
+    private val gestures = GestureDetector(context, gestureListener)
 
     private val scaler = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
         override fun onScale(detector: ScaleGestureDetector): Boolean {
@@ -131,6 +176,26 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
 
     @android.annotation.SuppressLint("ClickableViewAccessibility") // GestureDetector calls performClick for confirmed taps.
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        drag?.let { active ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_MOVE -> {
+                    active.point = coordinateAt(event.x + active.offset.x, event.y + active.offset.y)
+                    invalidate()
+                    return true
+                }
+                MotionEvent.ACTION_UP -> {
+                    drag = null
+                    gestures.onTouchEvent(event)
+                    onVertexMove?.invoke(active.index, active.point)
+                    invalidate()
+                    return true
+                }
+                MotionEvent.ACTION_CANCEL, MotionEvent.ACTION_POINTER_DOWN -> {
+                    drag = null
+                    invalidate()
+                }
+            }
+        }
         scaler.onTouchEvent(event)
         gestures.onTouchEvent(event)
         return true
@@ -170,11 +235,18 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
             }
         }
         if (draft.isNotEmpty()) {
-            drawShape(canvas, listOf(draft), 0xffa4512f.toInt(), draft.size >= 3)
-            for ((index, point) in draft.withIndex()) {
+            val active = drag
+            val boundary = if (active == null) draft else draft.mapIndexed { index, point ->
+                if (index == active.index) active.point else point
+            }
+            drawShape(canvas, listOf(boundary), Palette.rust, boundary.size >= 3)
+            for ((index, point) in boundary.withIndex()) {
                 val p = pixel(point)
-                paint.color = 0xffa4512f.toInt()
-                canvas.drawCircle(p.x, p.y, 9 * scale, paint)
+                paint.color = Color.WHITE
+                val radius = if (index == active?.index) 13 * scale else 10 * scale
+                canvas.drawCircle(p.x, p.y, radius + 2 * scale, paint)
+                paint.color = if (index == active?.index) Palette.pine else Palette.rust
+                canvas.drawCircle(p.x, p.y, radius, paint)
                 paint.color = Color.WHITE
                 paint.textSize = 10 * scale
                 paint.textAlign = Paint.Align.CENTER
@@ -191,6 +263,13 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
             canvas.drawCircle(p.x, p.y, 8 * scale, paint)
             paint.color = 0xff2d63c9.toInt()
             canvas.drawCircle(p.x, p.y, 6 * scale, paint)
+        }
+        pointPreview?.let {
+            val p = pixel(it)
+            paint.color = Color.WHITE
+            canvas.drawCircle(p.x, p.y, 10 * scale, paint)
+            paint.color = Palette.rust
+            canvas.drawCircle(p.x, p.y, 7 * scale, paint)
         }
         if (crosshair) drawCrosshair(canvas)
         drawScale(canvas)

@@ -28,9 +28,19 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+    testOptions.unitTests {
+        isIncludeAndroidResources = true
+        all {
+            it.systemProperty("robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2")
+            for (property in listOf("https.proxyHost", "https.proxyPort", "http.proxyHost", "http.proxyPort")) {
+                System.getProperty(property)?.let { value -> it.systemProperty(property, value) }
+            }
+        }
+    }
 }
 
 dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
+    testImplementation("org.robolectric:robolectric:4.14.1")
 }

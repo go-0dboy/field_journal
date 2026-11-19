@@ -114,13 +114,13 @@ class MainActivity : Activity() {
             }
             insets
         }
+        setContentView(root)
         if (android.os.Build.VERSION.SDK_INT >= 30) {
             window.insetsController?.setSystemBarsAppearance(
                 WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS,
                 WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
             )
         }
-        setContentView(root)
         root.requestApplyInsets()
         createMap()
         render()

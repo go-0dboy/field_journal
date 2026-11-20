@@ -114,7 +114,7 @@ internal class JournalEditor(
 
     private fun section(title: String) {
         body.addSpace(15)
-        val heading = activity.label(title, 19f, Palette.pine, true).apply {
+        val heading = activity.label(title, 19f, Palette.heading, true).apply {
             if (android.os.Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true
         }
         body.addView(heading)
@@ -188,7 +188,7 @@ internal class JournalEditor(
             value.accuracy?.let { add("Точность ±${it.toInt()} м") }
             value.altitude?.let { add("Высота ${it.toInt()} м (эллипсоид WGS 84)") }
         }
-        info.addView(activity.label(details.joinToString("\n"), 13f, Palette.pine).apply { setTextIsSelectable(true) })
+        info.addView(activity.label(details.joinToString("\n"), 13f, Palette.heading).apply { setTextIsSelectable(true) })
         info.addSpace(8)
         val actions = activity.horizontal()
         chip(actions, "На карте") { activity.showOnMap(value) }
@@ -250,36 +250,44 @@ internal class JournalEditor(
     }
 
     private fun addGroup(value: Site) {
+        val children = when {
+            isNew && value.area -> activity.store.childrenForNewArea(value)
+            value.area -> activity.store.children(value.id)
+            else -> emptyList()
+        }
+        val initialParent = parentId?.let(activity.store::site)
+        if (isNew && initialParent == null && children.isEmpty()) return
+
         section("Связанные объекты")
         val parent = activity.label("", 14f, Palette.muted)
         fun updateParent() {
-            parent.text = parentId?.let(activity.store::site)?.let { "В составе «${it.title}»" } ?: "Самостоятельный объект"
+            val group = parentId?.let(activity.store::site)
+            parent.visibility = if (group == null) View.GONE else View.VISIBLE
+            parent.text = group?.let {
+                if (isNew) "После сохранения в составе «${it.title}»" else "В составе «${it.title}»"
+            }.orEmpty()
         }
         updateParent()
-        body.addView(parent)
-        body.addSpace(8)
-        val parentButton = activity.iconAction(FieldIcon.PARENT_AREA) {
-            chooseParent(value, ::updateParent)
+        body.addView(parent, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = activity.dp(8) })
+        if (!isNew) {
+            addToolRow(buildList {
+                add(activity.iconAction(FieldIcon.PARENT_AREA) { chooseParent(value, ::updateParent) })
+                if (value.area) {
+                    add(activity.iconAction(FieldIcon.POINT, "Добавить точку внутри") {
+                        activity.createInside(value, area = false)
+                    })
+                    add(activity.iconAction(FieldIcon.AREA, "Добавить область внутри") {
+                        activity.createInside(value, area = true)
+                    })
+                }
+            })
+            if (children.isNotEmpty()) body.addSpace(8)
+        } else if (children.isNotEmpty()) {
+            body.addView(activity.label("Будут связаны после сохранения", 14f, Palette.muted))
+            body.addSpace(6)
         }
-        val mayCreateParts = value.area && !isNew
-        addToolRow(buildList {
-            add(parentButton)
-            if (mayCreateParts) {
-                add(activity.iconAction(FieldIcon.POINT, "Добавить точку внутри") {
-                    activity.createInside(value, area = false)
-                })
-                add(activity.iconAction(FieldIcon.AREA, "Добавить область внутри") {
-                    activity.createInside(value, area = true)
-                })
-            }
-        })
-        adoptionNotice()?.let { notice ->
-            body.addSpace(8)
-            body.addView(activity.label(notice, 14f, Palette.pine))
-        }
-        if (mayCreateParts) {
-            body.addSpace(8)
-            for (child in activity.store.children(value.id)) activity.card(body, child.title, child.symbol.title,
+        for (child in children) {
+            activity.card(body, child.title, child.symbol.title,
                 SymbolView(activity, child.symbol)) { activity.openGroupSite(child.id) }
         }
     }
@@ -477,7 +485,7 @@ internal class JournalEditor(
                 value.siteId?.let(activity.store::site)?.title,
                 dateLabel(value.created)
             ).joinToString(" · ")
-            body.addView(activity.label(context, 14f, Palette.pine, true))
+            body.addView(activity.label(context, 14f, Palette.heading, true))
             body.addSpace(8)
             field("body", "Короткая заметка", value.body, 3)
             addMedia()

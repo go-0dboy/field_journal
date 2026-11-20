@@ -261,7 +261,7 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        canvas.drawColor(0xffe8efeb.toInt())
+        canvas.drawColor(0xffecf0f7.toInt())
         drawGrid(canvas)
         val baseZoom = if (offline) offlineInfo?.maxZoom else if (layer == MapLayer.STREET) 19 else 22
         val baseDrawn = baseZoom?.let { drawTiles(canvas, TilePass.BASE, it) } ?: false
@@ -304,7 +304,7 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
                 paint.color = Color.WHITE
                 val radius = if (index == active?.index) 13 * scale else 10 * scale
                 canvas.drawCircle(p.x, p.y, radius + 2 * scale, paint)
-                paint.color = if (index == active?.index) Palette.pine else Palette.rust
+                paint.color = if (index == active?.index) Palette.heading else Palette.rust
                 canvas.drawCircle(p.x, p.y, radius, paint)
                 paint.color = Color.WHITE
                 paint.textSize = 10 * scale
@@ -382,11 +382,11 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
         paint.color = Color.WHITE
         paint.strokeWidth = 4f * scale
         canvas.drawLine(x, 0f, x, (height - footerInset).toFloat(), paint)
-        paint.color = Palette.pine
+        paint.color = Palette.heading
         paint.strokeWidth = 1.5f * scale
         canvas.drawLine(x, 0f, x, (height - footerInset).toFloat(), paint)
         val y = height * 0.42f
-        paint.color = Palette.pine
+        paint.color = Palette.heading
         canvas.drawRoundRect(x - 18 * scale, y - 15 * scale, x + 18 * scale, y + 15 * scale, 11 * scale, 11 * scale, paint)
         paint.color = Color.WHITE
         paint.strokeWidth = 2 * scale
@@ -417,7 +417,7 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
     }
 
     private fun drawGrid(canvas: Canvas) {
-        paint.color = 0xffd1ddd7.toInt()
+        paint.color = 0xffd8e0ec.toInt()
         paint.strokeWidth = scale
         val spacing = 64 * scale
         var x = (-rootX % spacing).toFloat()
@@ -523,7 +523,7 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
     private fun drawCrosshair(canvas: Canvas) {
         val x = width / 2f
         val y = height / 2f
-        for ((color, lineWidth) in listOf(Color.WHITE to 4f, 0xff184536.toInt() to 2f)) {
+        for ((color, lineWidth) in listOf(Color.WHITE to 4f, Palette.heading to 2f)) {
             paint.color = color
             paint.strokeWidth = lineWidth * scale
             canvas.drawLine(x - 13 * scale, y, x + 13 * scale, y, paint)
@@ -549,7 +549,7 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
         paint.color = Color.WHITE
         paint.strokeWidth = 5 * scale
         canvas.drawLine(x, y, x + w, y, paint)
-        paint.color = 0xff243a30.toInt()
+        paint.color = Palette.heading
         paint.strokeWidth = 2 * scale
         canvas.drawLine(x, y, x + w, y, paint)
     }
@@ -560,7 +560,7 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
         paint.color = 0xeafffdf6.toInt()
         canvas.drawRoundRect(x - 3 * scale, y - (size + 1) * scale, x + paint.measureText(text) + 3 * scale,
             y + 3 * scale, 3 * scale, 3 * scale, paint)
-        paint.color = 0xff25372d.toInt()
+        paint.color = Palette.ink
         canvas.drawText(text, x, y, paint)
         paint.typeface = Typeface.DEFAULT
     }

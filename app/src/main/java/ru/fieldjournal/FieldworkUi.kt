@@ -91,7 +91,7 @@ internal fun MainActivity.showSitePreview(site: Site) {
     val trip = store.trips.active()
     val visit = store.trips.latestVisit(site.id)
     fieldworkSheet(site.title) { dialog ->
-        addView(label(site.symbol.title, 15f, Palette.green, true))
+        addView(label(site.symbol.title, 15f, Palette.accent, true))
         site.parentId?.let(store::site)?.let { parent ->
             addView(action("В составе «${parent.title}»") { dialog.dismiss(); openSite(parent.id) }, -1, -2)
         }
@@ -185,7 +185,7 @@ internal fun MainActivity.showTripPage(list: LinearLayout, tripId: String) {
     val trip = contents.trip
     list.addView(action("‹ Все выезды") { closeTripDetails() }, -1, -2)
     list.addSpace(10)
-    list.addView(label(trip.title, 22f, Palette.pine, true))
+    list.addView(label(trip.title, 22f, Palette.heading, true))
     list.addView(label("Начат · ${dateLabel(trip.startedAt)}", 13f, Palette.muted))
     trip.endedAt?.let { list.addView(label("Завершён · ${dateLabel(it)}", 13f, Palette.muted)) }
     list.addSpace(8)
@@ -208,7 +208,7 @@ internal fun MainActivity.showTripPage(list: LinearLayout, tripId: String) {
     list.addView(routeToggle, -1, -2)
     if (contents.sites.isNotEmpty()) {
         list.addSpace(10)
-        list.addView(label("Посещённые объекты", 17f, Palette.pine, true))
+        list.addView(label("Посещённые объекты", 17f, Palette.heading, true))
         list.addSpace(6)
         for (site in contents.sites) card(list, site.title, site.symbol.title) { openSite(site.id) }
     }

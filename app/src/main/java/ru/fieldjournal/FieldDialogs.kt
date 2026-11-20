@@ -23,7 +23,7 @@ internal fun Context.fieldPrompt(
     val dialog = AlertDialog.Builder(this).create()
     val body = vertical().apply {
         setPadding(dp(18), dp(20), dp(18), dp(14))
-        addView(label(title, 20f, Palette.pine, true).apply {
+        addView(label(title, 20f, Palette.heading, true).apply {
             gravity = Gravity.CENTER
             if (Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true
         }, -1, -2)
@@ -36,7 +36,7 @@ internal fun Context.fieldPrompt(
             addView(vertical().apply {
                 background = panel(Palette.pale, 16)
                 setPadding(dp(10), dp(10), dp(10), dp(10))
-                addView(label(coordinates, 17f, Palette.pine, true).apply {
+                addView(label(coordinates, 17f, Palette.heading, true).apply {
                     gravity = Gravity.CENTER
                     typeface = Typeface.MONOSPACE
                 }, -1, -2)

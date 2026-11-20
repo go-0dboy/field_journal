@@ -12,19 +12,20 @@ import android.widget.LinearLayout
 import android.widget.TextView
 
 internal object Palette {
-    val paper = 0xfff4f5f2.toInt()
+    val paper = 0xfff5f6f9.toInt()
     val white = 0xffffffff.toInt()
-    val pine = 0xff163c38.toInt()
-    val green = 0xff14665e.toInt()
-    val pale = 0xffe4f0eb.toInt()
-    val control = 0xffeef1ee.toInt()
-    val ink = 0xff202b29.toInt()
-    val muted = 0xff52645f.toInt()
-    val border = 0xffdce3de.toInt()
+    val heading = 0xff172741.toInt()
+    val accent = 0xff245bbd.toInt()
+    val pale = 0xffe9f0fe.toInt()
+    val control = 0xffedf0f5.toInt()
+    val ink = 0xff182233.toInt()
+    val muted = 0xff536074.toInt()
+    val border = 0xffdce3ee.toInt()
     val floatingSurface = 0xf2ffffff.toInt()
-    val floatingAccent = 0xf514665e.toInt()
-    val rust = 0xff9a482f.toInt()
-    val ripple = ColorStateList.valueOf(0x2514665e)
+    val floatingAccent = 0xf5245bbd.toInt()
+    val notice = 0xee182941.toInt()
+    val rust = 0xff963c31.toInt()
+    val ripple = ColorStateList.valueOf(0x25245bbd)
 }
 
 internal fun Context.dp(value: Number) = (value.toFloat() * resources.displayMetrics.density + 0.5f).toInt()
@@ -47,18 +48,18 @@ internal fun Context.label(text: CharSequence, size: Float = 15f, color: Int = P
 
 internal fun Context.action(
     caption: String, primary: Boolean = false, description: String? = null, click: () -> Unit
-) = label(caption, 14f, if (primary) Color.WHITE else Palette.pine, true).apply {
+) = label(caption, 14f, if (primary) Color.WHITE else Palette.heading, true).apply {
     gravity = Gravity.CENTER
     minimumHeight = dp(48)
     setPadding(dp(12), 0, dp(12), 0)
     setTextColor(ColorStateList(
         arrayOf(intArrayOf(-android.R.attr.state_enabled), intArrayOf()),
-        intArrayOf(Palette.muted, if (primary) Color.WHITE else Palette.pine)
+        intArrayOf(Palette.muted, if (primary) Color.WHITE else Palette.heading)
     ))
-    val fill = panel(if (primary) Palette.green else Palette.control, 15).apply {
+    val fill = panel(if (primary) Palette.accent else Palette.control, 15).apply {
         setColor(ColorStateList(
             arrayOf(intArrayOf(-android.R.attr.state_enabled), intArrayOf()),
-            intArrayOf(Palette.control, if (primary) Palette.green else Palette.control)
+            intArrayOf(Palette.control, if (primary) Palette.accent else Palette.control)
         ))
     }
     background = RippleDrawable(Palette.ripple, fill, null)
@@ -75,7 +76,7 @@ internal fun Context.action(
 
 internal fun Context.edit(hint: String, value: String, lines: Int = 1) = EditText(this).apply {
     background = android.graphics.drawable.StateListDrawable().apply {
-        addState(intArrayOf(android.R.attr.state_focused), panel(Palette.white, 14, Palette.green))
+        addState(intArrayOf(android.R.attr.state_focused), panel(Palette.white, 14, Palette.accent))
         addState(intArrayOf(), panel(Palette.control, 14))
     }
     textSize = 16f
@@ -215,7 +216,7 @@ internal fun Context.navigationAction(title: String, icon: FieldIcon, selected: 
         minHeight = dp(54)
         setPadding(dp(2), dp(5), dp(2), dp(5))
         isSelected = selected
-        val ink = if (selected) Palette.green else Palette.muted
+        val ink = if (selected) Palette.accent else Palette.muted
         setTextColor(ink)
         background = RippleDrawable(Palette.ripple,
             panel(if (selected) Palette.pale else Color.TRANSPARENT, 14), panel(Color.WHITE, 14))
@@ -248,7 +249,7 @@ internal class CatalogRow(context: Context) : LinearLayout(context) {
                 addView(title)
                 addView(detail)
             }, LayoutParams(0, -2, 1f))
-            addView(context.label("›", 24f, Palette.green).apply {
+            addView(context.label("›", 24f, Palette.accent).apply {
                 importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
             })
         }, -1, -2)
@@ -298,12 +299,12 @@ internal fun Context.iconAction(
     minimumWidth = dp(48)
     minimumHeight = dp(48)
     background = RippleDrawable(Palette.ripple,
-        panel(if (primary) Palette.green else Palette.control, 15), null)
+        panel(if (primary) Palette.accent else Palette.control, 15), null)
     scaleType = android.widget.ImageView.ScaleType.CENTER
     setPadding(0, 0, 0, 0)
     setOnClickListener { click() }
     isFocusable = true
-    setImageDrawable(FieldIconDrawable(dp(24), icon, if (primary) Color.WHITE else Palette.pine))
+    setImageDrawable(FieldIconDrawable(dp(24), icon, if (primary) Color.WHITE else Palette.heading))
 }
 
 internal fun Context.mapAction(icon: FieldIcon, primary: Boolean = false, click: () -> Unit) =
@@ -319,7 +320,7 @@ internal fun Context.addAction(caption: String, icon: FieldIcon, primary: Boolea
         gravity = Gravity.CENTER_VERTICAL or Gravity.START
         setPaddingRelative(dp(14), 0, dp(14), 0)
         val size = dp(23)
-        val glyph = FieldIconDrawable(size, icon, if (primary) Color.WHITE else Palette.pine, adding = true)
+        val glyph = FieldIconDrawable(size, icon, if (primary) Color.WHITE else Palette.heading, adding = true)
         glyph.setBounds(0, 0, size, size)
         compoundDrawablePadding = dp(9)
         setCompoundDrawablesRelative(glyph, null, null, null)
@@ -579,7 +580,7 @@ internal class DiaryRow(context: Context) : LinearLayout(context) {
             addView(title)
             addView(detail)
         }, LayoutParams(0, -2, 1f))
-        addView(context.label("›", 22f, Palette.green).apply {
+        addView(context.label("›", 22f, Palette.accent).apply {
             importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
         })
     }

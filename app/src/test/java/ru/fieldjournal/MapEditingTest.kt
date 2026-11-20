@@ -93,7 +93,14 @@ class MapEditingTest {
             root.icon(FieldIcon.DONE_AREA).performClick()
             chooseFirstType()
             val notice = "После сохранения эта область станет родительской для объектов внутри неё. Объектов для привязки — 2."
-            root.text(notice)
+            root.text("Будут связаны после сохранения")
+            fun linkedCard(title: String): ViewGroup = root.text(title).parent.parent as ViewGroup
+            for (child in listOf(inner, existing)) {
+                assertTrue(linkedCard(child.title).descendants().any { it is SymbolView })
+            }
+            assertTrue(root.descendants().filterIsInstance<TextView>().none { it.text == outside.title })
+            assertTrue(root.descendants().none { it.contentDescription == FieldIcon.PARENT_AREA.description })
+            assertTrue(root.descendants().filterIsInstance<TextView>().none { it.text == "Самостоятельный объект" })
             activity.closeEditor()
             val confirmation = ShadowAlertDialog.getLatestAlertDialog().window!!.decorView
             confirmation.text(notice)
@@ -108,12 +115,19 @@ class MapEditingTest {
             assertEquals(setOf(inner.id, existing.id), store.children(parent.id).map(Site::id).toSet())
             assertEquals(inner.id, store.site(innerPoint.id)?.parentId)
             assertNull(store.site(outside.id)?.parentId)
+            activity.openSite(parent.id)
+            assertTrue(root.icon(FieldIcon.PARENT_AREA).isShown)
+            assertTrue(linkedCard(inner.title).descendants().any { it is SymbolView })
+            assertTrue(linkedCard(existing.title).descendants().any { it is SymbolView })
+            activity.closeEditor()
 
             val point = Coordinate(57.0035, 40.0035)
             root.icon(FieldIcon.POINT).performClick()
             map.onTap?.invoke(point, null)
             root.icon(FieldIcon.SET_POINT).performClick()
             chooseFirstType()
+            root.text("После сохранения в составе «${inner.title}»")
+            assertTrue(root.descendants().none { it.contentDescription == FieldIcon.PARENT_AREA.description })
             confirmSave(activity)
             assertEquals(inner.id, store.sites().single { it.anchor == point && !it.area }.parentId)
         } finally {

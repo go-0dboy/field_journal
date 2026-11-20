@@ -209,7 +209,7 @@ class MainActivity : Activity() {
         header = vertical()
         notice = label("", 14f, android.graphics.Color.WHITE).apply {
             visibility = View.GONE
-            background = panel(0xee18353d.toInt(), 18)
+            background = panel(Palette.notice, 18)
             setPadding(dp(16), dp(10), dp(16), dp(10))
             accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         }
@@ -475,7 +475,7 @@ class MainActivity : Activity() {
             setBackgroundColor(Palette.white)
         }
         row.addView(editorAction(done = false) { closeEditor() }, dp(48), dp(48))
-        val name = label(title, 19f, Palette.pine, true)
+        val name = label(title, 19f, Palette.heading, true)
         if (android.os.Build.VERSION.SDK_INT >= 28) name.isAccessibilityHeading = true
         row.addView(name, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(10) })
         row.addView(editorAction(done = true) { closeEditor() }, LinearLayout.LayoutParams(dp(48), dp(48)).apply {
@@ -529,7 +529,7 @@ class MainActivity : Activity() {
                 updateMapDraft()
             }
         }
-        fun mapCaption(size: Float) = label("", size, Palette.pine, true).apply {
+        fun mapCaption(size: Float) = label("", size, Palette.heading, true).apply {
             setSingleLine(true)
             ellipsize = TextUtils.TruncateAt.END
             setPadding(dp(12), dp(3), dp(12), dp(3))
@@ -1042,7 +1042,7 @@ class MainActivity : Activity() {
                 }
                 controls.addView(group, -1, -2)
                 if (history == null) {
-                    group.addView(label("Историческая карта", 17f, Palette.pine, true))
+                    group.addView(label("Историческая карта", 17f, Palette.heading, true))
                     group.addSpace(4)
                     group.addView(label("MBTiles, SQLiteDB, GeoPackage", 13f, Palette.muted))
                     group.addSpace(6)
@@ -1487,7 +1487,7 @@ class MainActivity : Activity() {
         val box = vertical().apply {
             background = panel(Palette.pale)
             setPadding(dp(18), dp(18), dp(18), dp(18))
-            addView(label(title, 18f, Palette.pine, true))
+            addView(label(title, 18f, Palette.heading, true))
             addSpace(5)
             addView(label(detail, 14f, Palette.muted))
         }

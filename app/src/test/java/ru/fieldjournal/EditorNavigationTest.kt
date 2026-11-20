@@ -50,6 +50,32 @@ class EditorNavigationTest {
         }
     }
 
+    @Test fun leavingGeometryEditKeepsTheConfirmationForOtherCardChanges() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        try {
+            val activity = controller.get()
+            val original = Site(title = "Стоянка", vertices = listOf(Coordinate(59.0, 33.0)))
+            activity.store.save(original)
+            activity.openSite(original.id)
+            val root = activity.window.decorView
+            root.input("Название").setText("Стоянка у реки")
+            activity.editGeometry(original)
+            val map = root.descendants().filterIsInstance<FieldMap>().single()
+            map.onTap?.invoke(Coordinate(60.0, 34.0), null)
+            root.text("Дневник").performClick()
+            assertFalse(map.editingGeometry)
+            val confirmation = ShadowAlertDialog.getLatestAlertDialog().window!!.decorView
+            confirmation.text("Сохранить изменения?")
+            chooseConfirmation("Сохранить")
+            assertTrue(root.text("+ Запись").isShown)
+            val saved = requireNotNull(activity.store.site(original.id))
+            assertEquals("Стоянка у реки", saved.title)
+            assertEquals(original.vertices, saved.vertices)
+        } finally {
+            controller.pause().stop().destroy()
+        }
+    }
+
     @Test fun attachmentCopyReturnsToTheSameDraftAfterRecreation() {
         val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
         val started = java.util.concurrent.CountDownLatch(1)
@@ -125,16 +151,16 @@ class EditorNavigationTest {
         try {
             val activity = controller.get()
             val root = activity.window.decorView
-            root.text("+ Точка").performClick()
+            root.action(MapIcon.POINT.description).performClick()
             layout(root)
             layout(root)
-            val hint = root.text("Коснитесь места и нажмите «Установить»")
-            val install = root.text("Установить")
-            assertTrue(top(hint) + hint.height <= top(install))
+            val hint = root.text("Коснитесь места и нажмите галочку")
+            val install = root.action(MapIcon.SET_POINT.description)
+            assertTrue(top(hint) >= top(install) + install.height)
             assertTrue(top(hint) + hint.height <= top(root.action("Моё место")))
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(5))
             assertEquals(View.GONE, hint.visibility)
-            root.text("Отмена").performClick()
+            root.action(MapIcon.CANCEL.description).performClick()
 
             root.text("Дневник").performClick()
             root.text("+ Запись").performClick()

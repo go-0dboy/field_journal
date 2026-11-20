@@ -77,9 +77,10 @@ class MainActivity : Activity() {
     private lateinit var content: FrameLayout
     private lateinit var nav: LinearLayout
     private lateinit var map: FieldMap
-    private lateinit var mapPanel: LinearLayout
-    private lateinit var mapStatus: TextView
-    private lateinit var mapActions: LinearLayout
+    private lateinit var mapPanel: FrameLayout
+    private lateinit var mapCoordinates: TextView
+    private lateinit var mapElevation: TextView
+    private lateinit var mapArea: TextView
     private lateinit var mapLocationButton: View
     private val handler = Handler(Looper.getMainLooper())
     private val hideNotice = Runnable { notice.visibility = View.GONE }
@@ -355,8 +356,7 @@ class MainActivity : Activity() {
         }
         when (tab) {
             Tab.MAP -> {
-                setHeader("Полевой дневник", action("Слои") { chooseLayers() })
-                content.addView(mapPanel)
+                content.addView(mapPanel, -1, -1)
                 refreshMap()
                 updateControls()
             }
@@ -376,7 +376,7 @@ class MainActivity : Activity() {
     }
 
     private fun updateNavigationVisibility() {
-        nav.visibility = if (editorId != null || drawMode != DrawMode.NONE || keyboardVisible) View.GONE else View.VISIBLE
+        nav.visibility = if (editorId != null || keyboardVisible) View.GONE else View.VISIBLE
     }
 
     private fun setHeader(title: String, action: View?, back: Boolean = false) {
@@ -392,16 +392,19 @@ class MainActivity : Activity() {
     }
 
     private fun switch(next: Tab) {
-        if (drawMode != DrawMode.NONE && next != Tab.MAP) {
-            confirm("Закрыть рисование?", "Добавленные вершины будут сброшены.") {
-                if (geometryDraft != null) cancelDraw()
-                else {
-                    resetDraw()
-                    tab = next
-                    render()
-                }
+        if (next == tab) return
+        if (drawMode != DrawMode.NONE && geometryDraft?.dirty == true) {
+            cancelDraw()
+            confirmBeforeLeaving {
+                draftFile.delete()
+                detachEditor()
+                switch(next)
             }
             return
+        }
+        if (drawMode != DrawMode.NONE) {
+            resetDraw()
+            draftFile.delete()
         }
         tab = next
         render()
@@ -430,39 +433,37 @@ class MainActivity : Activity() {
                 updateMapDraft()
             }
         }
-        mapStatus = label("", 12f, Palette.pine, true).apply {
+        mapCoordinates = label("", 13f, Palette.pine, true).apply {
             typeface = android.graphics.Typeface.MONOSPACE
-            setPadding(dp(13), 0, dp(10), 0)
-            gravity = Gravity.CENTER_VERTICAL
-            minimumHeight = dp(34)
+            gravity = Gravity.END
         }
-        mapActions = horizontal().apply { setPadding(dp(8), dp(4), dp(8), dp(8)) }
-        val frame = FrameLayout(this).apply {
+        mapElevation = label("", 12f, Palette.muted).apply { gravity = Gravity.END }
+        mapArea = label("", 12f, Palette.muted).apply { gravity = Gravity.END }
+        mapPanel = FrameLayout(this).apply {
             addView(map, FrameLayout.LayoutParams(-1, -1))
-            val zoom = vertical()
-            for ((caption, delta) in listOf("+" to 1.0, "−" to -1.0)) {
-                zoom.addView(action(caption, description = if (delta > 0) "Приблизить" else "Отдалить") {
-                    map.zoomBy(delta)
-                }.apply { textSize = 22f }, LinearLayout.LayoutParams(dp(48), dp(48)).apply { bottomMargin = dp(4) })
+            val controls = vertical().apply {
+                gravity = Gravity.END
+                addView(vertical().apply {
+                    background = panel(Palette.white, 14, Palette.border)
+                    setPadding(dp(10), dp(6), dp(10), dp(6))
+                    addView(mapCoordinates, -1, -2)
+                    addView(mapElevation, -1, -2)
+                    addView(mapArea, -1, -2)
+                }, -2, -2)
+                for ((icon, delta) in listOf(MapIcon.ZOOM_IN to 1.0, MapIcon.ZOOM_OUT to -1.0)) {
+                    addView(mapAction(icon) { map.zoomBy(delta) },
+                        LinearLayout.LayoutParams(dp(48), dp(48)).apply { topMargin = dp(6) })
+                }
             }
-            addView(zoom, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply {
+            addView(controls, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply {
                 topMargin = dp(10)
                 marginEnd = dp(10)
             })
-            mapLocationButton = locationAction { requestLocation() }
+            mapLocationButton = mapAction(MapIcon.LOCATION) { requestLocation() }
             addView(mapLocationButton, FrameLayout.LayoutParams(dp(48), dp(48), Gravity.BOTTOM or Gravity.END).apply {
                 bottomMargin = dp(32)
                 marginEnd = dp(10)
             })
-        }
-        mapPanel = vertical().apply {
-            addView(frame, LinearLayout.LayoutParams(-1, 0, 1f))
-            val bottom = vertical().apply {
-                background = panel(Palette.paper, 0)
-                addView(mapStatus)
-                addView(mapActions)
-            }
-            addView(bottom, -1, -2)
         }
     }
 
@@ -481,15 +482,25 @@ class MainActivity : Activity() {
     }
 
     private fun updateMapStatus() {
-        if (!this::mapStatus.isInitialized) return
-        val status = when (drawMode) {
-            DrawMode.NONE -> fix?.let {
-                "${it.point.display()}  ±${it.accuracy.roundToInt()} м · ${it.source}"
-            } ?: "${map.center.display()}  •  ${if (tiles.offline) "Офлайн" else tiles.layer.title}"
-            DrawMode.POINT, DrawMode.MOVE_POINT -> "Точка  ${(selectedPoint ?: map.center).display()}"
-            DrawMode.AREA, DrawMode.MOVE_AREA -> "Граница  •  ${vertices.size} вершин  •  ${areaLabel(areaSquareMeters(vertices))}"
+        if (!this::mapCoordinates.isInitialized) return
+        val measured = recentFix()
+        val point = when (drawMode) {
+            DrawMode.NONE -> measured?.point ?: map.center
+            DrawMode.POINT, DrawMode.MOVE_POINT -> selectedPoint ?: map.center
+            DrawMode.AREA, DrawMode.MOVE_AREA -> map.center
         }
-        mapStatus.text = status
+        val pointFix = measured?.takeIf { it.point == point }
+        val savedPoint = geometryDraft?.site?.takeIf { it.vertices.singleOrNull() == point }
+        val altitude = pointFix?.altitude ?: savedPoint?.altitude
+        mapCoordinates.text = point.display()
+        mapElevation.text = buildString {
+            append("Высота ")
+            append(altitude?.let { "${it.roundToInt()} м" } ?: "—")
+            pointFix?.let { append(" · ±${it.accuracy.roundToInt()} м") }
+        }
+        val drawingArea = drawMode == DrawMode.AREA || drawMode == DrawMode.MOVE_AREA
+        mapArea.visibility = if (drawingArea) View.VISIBLE else View.GONE
+        if (drawingArea) mapArea.text = "Вершин ${vertices.size} · ${areaLabel(areaSquareMeters(vertices))}"
     }
 
     private fun addVertex(point: Coordinate) {
@@ -506,40 +517,48 @@ class MainActivity : Activity() {
     }
 
     private fun updateControls() {
-        updateNavigationVisibility()
         updateMapStatus()
-        mapActions.removeAllViews()
-        fun control(text: String, primary: Boolean = false, description: String? = null, click: () -> Unit) {
-            val button = action(text, primary, description, click).apply {
-                textSize = 13f
-                setPadding(dp(3), 0, dp(3), 0)
+        header.removeAllViews()
+        header.addView(horizontal().apply {
+            setPadding(dp(10), dp(6), dp(10), dp(6))
+            fun control(icon: MapIcon, primary: Boolean = false, click: () -> Unit) {
+                addView(mapAction(icon, primary, click),
+                    LinearLayout.LayoutParams(dp(48), dp(48)).apply {
+                        if (childCount > 0) marginStart = dp(4)
+                    })
             }
-            mapActions.addView(button, LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(dp(2), 0, dp(2), 0) })
-        }
-        when (drawMode) {
-            DrawMode.NONE -> {
-                control("+ Точка", true) { beginDraw(DrawMode.POINT) }
-                control("+ Область") { beginDraw(DrawMode.AREA) }
-                control("Координаты") { showCoordinates(map.center, allowEntry = true) }
-            }
-            DrawMode.POINT, DrawMode.MOVE_POINT -> {
-                control("Координаты") { showCoordinates(selectedPoint ?: map.center) }
-                control("Установить", true) {
-                    val point = selectedPoint ?: map.center
-                    saveGeometry(listOf(point), recentFix()?.takeIf { it.point == point })
+            fun spacer() = addView(View(this@MainActivity), LinearLayout.LayoutParams(0, 0, 1f))
+            when (drawMode) {
+                DrawMode.NONE -> {
+                    control(MapIcon.POINT, true) { beginDraw(DrawMode.POINT) }
+                    control(MapIcon.AREA) { beginDraw(DrawMode.AREA) }
+                    control(MapIcon.COORDINATES) { showCoordinates(map.center, allowEntry = true) }
+                    spacer()
+                    control(MapIcon.LAYERS) { chooseLayers() }
                 }
-                control("Отмена") { cancelDraw() }
-            }
-            DrawMode.AREA, DrawMode.MOVE_AREA -> {
-                control("Добавить", description = "Добавить вершину в центр карты") { addVertex(map.center) }
-                control("Удалить", description = "Удалить последнюю вершину") { removeVertex(vertices.lastIndex) }
-                control("Готово", true) {
-                    val error = polygonError(vertices)
-                    if (error == null) saveGeometry(vertices.toList()) else message(error.message)
+                DrawMode.POINT, DrawMode.MOVE_POINT -> {
+                    control(MapIcon.LAYERS) { chooseLayers() }
+                    control(MapIcon.COORDINATES) { showCoordinates(selectedPoint ?: map.center) }
+                    spacer()
+                    control(MapIcon.SET_POINT, true) {
+                        val point = selectedPoint ?: map.center
+                        saveGeometry(listOf(point), recentFix()?.takeIf { it.point == point })
+                    }
+                    control(MapIcon.CANCEL) { cancelDraw() }
                 }
-                control("Отмена") { cancelDraw() }
+                DrawMode.AREA, DrawMode.MOVE_AREA -> {
+                    control(MapIcon.LAYERS) { chooseLayers() }
+                    control(MapIcon.ADD_VERTEX) { addVertex(map.center) }
+                    control(MapIcon.UNDO_VERTEX) { removeVertex(vertices.lastIndex) }
+                    spacer()
+                    control(MapIcon.DONE_AREA, true) {
+                        val error = polygonError(vertices)
+                        if (error == null) saveGeometry(vertices.toList()) else message(error.message)
+                    }
+                    control(MapIcon.CANCEL) { cancelDraw() }
+                }
             }
-        }
+        }, -1, -2)
     }
 
     private fun beginDraw(mode: DrawMode) {
@@ -548,7 +567,7 @@ class MainActivity : Activity() {
         updateControls()
         message(if (mode == DrawMode.AREA || mode == DrawMode.MOVE_AREA)
             "Касание добавляет или удаляет вершину. Удерживайте её для перетаскивания"
-        else "Коснитесь места и нажмите «Установить»")
+        else "Коснитесь места и нажмите галочку")
     }
 
     private fun showCoordinates(point: Coordinate, allowEntry: Boolean = false) {
@@ -604,6 +623,7 @@ class MainActivity : Activity() {
         geometrySite = null
         geometryDraft = null
         selectedPoint = null
+        updateMapDraft()
     }
 
     private fun cancelDraw() {

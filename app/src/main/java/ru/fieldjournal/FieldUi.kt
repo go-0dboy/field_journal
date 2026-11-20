@@ -284,45 +284,158 @@ internal class CatalogRow(context: Context) : LinearLayout(context) {
     }
 }
 
-internal fun Context.locationAction(click: () -> Unit) =
+internal enum class MapIcon(val description: String) {
+    POINT("Добавить точку"),
+    AREA("Добавить область"),
+    COORDINATES("Координаты"),
+    LAYERS("Слои"),
+    SET_POINT("Установить точку"),
+    DONE_AREA("Готово"),
+    CANCEL("Отмена"),
+    ADD_VERTEX("Добавить вершину в центр карты"),
+    UNDO_VERTEX("Удалить последнюю вершину"),
+    ZOOM_IN("Приблизить"),
+    ZOOM_OUT("Отдалить"),
+    LOCATION("Моё место")
+}
+
+internal fun Context.mapAction(icon: MapIcon, primary: Boolean = false, click: () -> Unit) =
     android.widget.ImageButton(this).apply {
-        contentDescription = "Моё место"
-        background = RippleDrawable(ColorStateList.valueOf(0x254b816d), panel(Palette.white, 24, Palette.border), null)
+        contentDescription = icon.description
+        tooltipText = icon.description
+        minimumWidth = dp(48)
+        minimumHeight = dp(48)
+        background = RippleDrawable(ColorStateList.valueOf(0x254b816d),
+            panel(if (primary) Palette.green else Palette.white, 16, if (primary) 0 else Palette.border), null)
         scaleType = android.widget.ImageView.ScaleType.CENTER
         setPadding(0, 0, 0, 0)
         setOnClickListener { click() }
-        val target = object : android.graphics.drawable.Drawable() {
-            override fun getIntrinsicWidth() = dp(24)
-            override fun getIntrinsicHeight() = dp(24)
-
-            private val pen = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Palette.pine
-                strokeWidth = 2f
-                strokeCap = Paint.Cap.ROUND
-            }
-
-            override fun draw(canvas: Canvas) {
-                canvas.save()
-                canvas.translate(bounds.exactCenterX(), bounds.exactCenterY())
-                canvas.scale(bounds.width() / 24f, bounds.height() / 24f)
-                pen.style = Paint.Style.STROKE
-                canvas.drawCircle(0f, 0f, 8f, pen)
-                canvas.drawLine(0f, -11f, 0f, -8f, pen)
-                canvas.drawLine(0f, 8f, 0f, 11f, pen)
-                canvas.drawLine(-11f, 0f, -8f, 0f, pen)
-                canvas.drawLine(8f, 0f, 11f, 0f, pen)
-                pen.style = Paint.Style.FILL
-                canvas.drawCircle(0f, 0f, 3.5f, pen)
-                canvas.restore()
-            }
-
-            override fun setAlpha(alpha: Int) { pen.alpha = alpha }
-            override fun setColorFilter(colorFilter: ColorFilter?) { pen.colorFilter = colorFilter }
-            @Deprecated("Drawable opacity is no longer used")
-            override fun getOpacity() = PixelFormat.TRANSLUCENT
-        }
-        setImageDrawable(target)
+        setImageDrawable(MapIconDrawable(dp(23), icon, if (primary) Color.WHITE else Palette.pine))
     }
+
+private class MapIconDrawable(private val size: Int, private val icon: MapIcon, color: Int) :
+    android.graphics.drawable.Drawable() {
+    private val pen = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        this.color = color
+        style = Paint.Style.STROKE
+        strokeWidth = 1.8f
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+    }
+
+    override fun getIntrinsicWidth() = size
+    override fun getIntrinsicHeight() = size
+
+    override fun draw(canvas: Canvas) {
+        canvas.save()
+        canvas.translate(bounds.left.toFloat(), bounds.top.toFloat())
+        canvas.scale(bounds.width() / 24f, bounds.height() / 24f)
+        fun path(outline: Path.() -> Unit) = canvas.drawPath(Path().apply(outline), pen)
+        fun line(x1: Float, y1: Float, x2: Float, y2: Float) = canvas.drawLine(x1, y1, x2, y2, pen)
+        fun circle(x: Float, y: Float, radius: Float) = canvas.drawCircle(x, y, radius, pen)
+
+        when (icon) {
+            MapIcon.POINT -> {
+                path {
+                    moveTo(19f, 9f)
+                    cubicTo(19f, 14f, 12f, 21f, 12f, 21f)
+                    cubicTo(12f, 21f, 5f, 14f, 5f, 9f)
+                    cubicTo(5f, 0f, 19f, 0f, 19f, 9f)
+                    close()
+                }
+                circle(12f, 9f, 2.2f)
+            }
+            MapIcon.AREA -> {
+                path {
+                    moveTo(5f, 7f)
+                    lineTo(18f, 4f)
+                    lineTo(20f, 16f)
+                    lineTo(8f, 20f)
+                    close()
+                }
+                pen.style = Paint.Style.FILL
+                circle(5f, 7f, 1.8f)
+                circle(18f, 4f, 1.8f)
+                circle(20f, 16f, 1.8f)
+                circle(8f, 20f, 1.8f)
+                pen.style = Paint.Style.STROKE
+            }
+            MapIcon.COORDINATES -> {
+                path {
+                    moveTo(9f, 4f)
+                    lineTo(4f, 4f)
+                    lineTo(4f, 9f)
+                    moveTo(15f, 4f)
+                    lineTo(20f, 4f)
+                    lineTo(20f, 9f)
+                    moveTo(4f, 15f)
+                    lineTo(4f, 20f)
+                    lineTo(9f, 20f)
+                    moveTo(20f, 15f)
+                    lineTo(20f, 20f)
+                    lineTo(15f, 20f)
+                }
+                circle(12f, 12f, 2.5f)
+            }
+            MapIcon.LAYERS -> path {
+                moveTo(3f, 8f)
+                lineTo(12f, 3f)
+                lineTo(21f, 8f)
+                lineTo(12f, 13f)
+                close()
+                moveTo(3f, 12f)
+                lineTo(12f, 17f)
+                lineTo(21f, 12f)
+                moveTo(3f, 16f)
+                lineTo(12f, 21f)
+                lineTo(21f, 16f)
+            }
+            MapIcon.SET_POINT, MapIcon.DONE_AREA -> path {
+                moveTo(5f, 12f)
+                lineTo(10f, 17f)
+                lineTo(19f, 7f)
+            }
+            MapIcon.CANCEL -> {
+                line(6f, 6f, 18f, 18f)
+                line(6f, 18f, 18f, 6f)
+            }
+            MapIcon.ADD_VERTEX -> {
+                circle(12f, 12f, 9f)
+                line(8f, 12f, 16f, 12f)
+                line(12f, 8f, 12f, 16f)
+            }
+            MapIcon.UNDO_VERTEX -> path {
+                moveTo(9f, 5f)
+                lineTo(4f, 10f)
+                lineTo(9f, 15f)
+                moveTo(4f, 10f)
+                lineTo(14f, 10f)
+                cubicTo(21f, 10f, 21f, 19f, 14f, 19f)
+                lineTo(12f, 19f)
+            }
+            MapIcon.ZOOM_IN, MapIcon.ZOOM_OUT -> {
+                line(5f, 12f, 19f, 12f)
+                if (icon == MapIcon.ZOOM_IN) line(12f, 5f, 12f, 19f)
+            }
+            MapIcon.LOCATION -> {
+                circle(12f, 12f, 8f)
+                line(12f, 1f, 12f, 4f)
+                line(12f, 20f, 12f, 23f)
+                line(1f, 12f, 4f, 12f)
+                line(20f, 12f, 23f, 12f)
+                pen.style = Paint.Style.FILL
+                circle(12f, 12f, 3.4f)
+                pen.style = Paint.Style.STROKE
+            }
+        }
+        canvas.restore()
+    }
+
+    override fun setAlpha(alpha: Int) { pen.alpha = alpha }
+    override fun setColorFilter(colorFilter: ColorFilter?) { pen.colorFilter = colorFilter }
+    @Deprecated("Drawable opacity is no longer used")
+    override fun getOpacity() = PixelFormat.TRANSLUCENT
+}
 
 internal fun Context.editorAction(done: Boolean, click: () -> Unit) =
     android.widget.ImageButton(this).apply {

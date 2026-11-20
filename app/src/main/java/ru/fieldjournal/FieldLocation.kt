@@ -11,13 +11,13 @@ import android.os.Build
 import android.os.Looper
 import android.os.SystemClock
 
-internal data class LocationFix(val point: Coordinate, val accuracy: Double, val altitude: Double?, val source: String, val elapsedMs: Long)
+internal data class LocationFix(val point: Coordinate, val accuracy: Double, val altitude: Double?, val elapsedMs: Long)
 
 internal class FieldLocation(private val context: Context, private val onFix: (LocationFix) -> Unit) {
     private val manager = context.getSystemService(LocationManager::class.java)
     private var best: Location? = null
     private val watcher = object : LocationListener {
-        override fun onLocationChanged(location: Location) = accept(location, false)
+        override fun onLocationChanged(location: Location) = accept(location)
         override fun onProviderEnabled(provider: String) = Unit
         override fun onProviderDisabled(provider: String) = Unit
         override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) = Unit
@@ -42,7 +42,7 @@ internal class FieldLocation(private val context: Context, private val onFix: (L
             runCatching {
                 manager.requestLocationUpdates(provider, 2000L, 1f, watcher, Looper.getMainLooper())
                 registered = true
-                manager.getLastKnownLocation(provider)?.let { accept(it, true) }
+                manager.getLastKnownLocation(provider)?.let(::accept)
             }
         }
         return registered
@@ -52,7 +52,7 @@ internal class FieldLocation(private val context: Context, private val onFix: (L
         manager.removeUpdates(watcher)
     }
 
-    private fun accept(location: Location, cached: Boolean) {
+    private fun accept(location: Location) {
         val elapsed = location.elapsedRealtimeNanos / 1_000_000L
         val age = SystemClock.elapsedRealtime() - elapsed
         if (age > 45_000 || !location.hasAccuracy() || location.accuracy <= 0) return
@@ -62,12 +62,7 @@ internal class FieldLocation(private val context: Context, private val onFix: (L
             if (gap < -2_000 || (gap < 12_000 && location.accuracy > previous.accuracy * 1.25f)) return
         }
         best = location
-        val provider = when (location.provider) {
-            LocationManager.GPS_PROVIDER -> "GNSS"
-            LocationManager.NETWORK_PROVIDER -> "Сеть"
-            else -> "Android"
-        }
         onFix(LocationFix(Coordinate(location.latitude, location.longitude), location.accuracy.toDouble(),
-            location.altitude.takeIf { location.hasAltitude() }, provider + if (cached) " · недавнее" else "", elapsed))
+            location.altitude.takeIf { location.hasAltitude() }, elapsed))
     }
 }

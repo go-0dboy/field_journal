@@ -240,13 +240,6 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
             drawTiles(canvas, TilePass.ROADS, 19)
             drawTiles(canvas, TilePass.PLACES, 19)
         } else referenceInfo?.let { drawTiles(canvas, TilePass.LOCAL_REFERENCES, it.maxZoom) }
-        val hasTiles = baseDrawn || historyDrawn
-        if (offline && !hasTiles && pending.isEmpty()) {
-            val message = if (offlineInfo == null) "Подключите офлайн-карту в разделе «Слои»" else "Для этого участка нет офлайн-тайлов"
-            drawLabel(canvas, message, 12 * scale, 23 * scale)
-        } else if (!offline && !hasTiles && unavailable.isNotEmpty() && pending.isEmpty()) {
-            drawLabel(canvas, "Подложка недоступна · проверьте сеть", 12 * scale, 23 * scale)
-        }
         for (site in sites.asReversed()) {
             val type = objectType(site.type)
             if (site.area) drawShape(canvas, listOf(site.vertices) + site.holes, type.color, true)
@@ -294,20 +287,35 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
             canvas.drawCircle(p.x, p.y, 7 * scale, paint)
         }
         if (crosshair) drawCrosshair(canvas)
-        val creditLines = attribution.flatMap { credit -> wrapCredit(credit) }
+        val creditLines = attribution.flatMap { credit -> wrapMapLabel(credit, 9f) }
+        if (!baseDrawn && !historyDrawn && pending.isEmpty()) {
+            val message = when {
+                offline && offlineInfo == null -> "Подключите офлайн-карту в разделе «Слои»"
+                offline -> "Для этого участка нет офлайн-тайлов"
+                unavailable.isNotEmpty() -> "Подложка недоступна · проверьте сеть"
+                else -> null
+            }
+            message?.let {
+                val lines = wrapMapLabel(it, 11f)
+                val bottom = height - (38 + 12 * creditLines.size) * scale
+                lines.forEachIndexed { index, line ->
+                    drawLabel(canvas, line, 12 * scale, bottom - 15 * scale * (lines.lastIndex - index))
+                }
+            }
+        }
         drawScale(canvas, creditLines.size)
         creditLines.forEachIndexed { index, line ->
             drawLabel(canvas, line, 12 * scale, height - (7 + 11 * (creditLines.lastIndex - index)) * scale, 9f)
         }
     }
 
-    private fun wrapCredit(credit: String): List<String> {
+    private fun wrapMapLabel(text: String, size: Float): List<String> {
         paint.typeface = Typeface.DEFAULT_BOLD
-        paint.textSize = 9 * scale
+        paint.textSize = size * scale
         val available = (width - 74 * scale).coerceAtLeast(0f)
         val lines = mutableListOf<String>()
         var line = ""
-        for (word in credit.split(Regex("\\s+"))) {
+        for (word in text.split(Regex("\\s+"))) {
             val next = if (line.isEmpty()) word else "$line $word"
             if (line.isNotEmpty() && paint.measureText(next) > available) {
                 lines.add(line)

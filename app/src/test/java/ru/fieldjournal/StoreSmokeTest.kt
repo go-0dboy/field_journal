@@ -211,10 +211,16 @@ class StoreSmokeTest {
             is android.view.ViewGroup -> (0 until view.childCount).flatMap { labels(view.getChildAt(it)) }
             else -> emptyList()
         }
-        assertTrue(labels(root).contains("Полевой дневник"))
-        assertTrue(labels(root).contains("+ Точка"))
-        assertTrue(labels(root).contains("+ Область"))
-        assertTrue(labels(root).any { it.endsWith("Дневник") })
+        val text = labels(root)
+        assertFalse(text.contains("Полевой дневник"))
+        assertTrue(text.containsAll(listOf("Карта", "Объекты", "Дневник")))
+        val buttons = ArrayList<android.view.View>()
+        for (icon in listOf(MapIcon.POINT, MapIcon.AREA, MapIcon.COORDINATES, MapIcon.LAYERS)) {
+            buttons.clear()
+            root.findViewsWithText(buttons, icon.description, android.view.View.FIND_VIEWS_WITH_CONTENT_DESCRIPTION)
+            assertTrue(buttons.any { it is android.widget.ImageButton && it.contentDescription == icon.description })
+            assertFalse(text.contains(icon.description))
+        }
         controller.pause().stop().destroy()
     }
 }

@@ -12,14 +12,16 @@ import android.widget.LinearLayout
 import android.widget.TextView
 
 internal object Palette {
-    val paper = 0xfff4f5f0.toInt()
-    val white = 0xfffffefa.toInt()
-    val pine = 0xff184536.toInt()
-    val green = 0xff21604c.toInt()
-    val pale = 0xffe5eee5.toInt()
-    val ink = 0xff1d2e25.toInt()
-    val muted = 0xff55685d.toInt()
-    val border = 0xffdbe2d9.toInt()
+    val paper = 0xfff3f6f8.toInt()
+    val white = 0xfffcfeff.toInt()
+    val pine = 0xff173c47.toInt()
+    val green = 0xff196475.toInt()
+    val pale = 0xffe1eff2.toInt()
+    val ink = 0xff1c2c35.toInt()
+    val muted = 0xff526773.toInt()
+    val border = 0xffd6e2e8.toInt()
+    val floatingSurface = 0xdcfcfeff.toInt()
+    val floatingAccent = 0xe6196475.toInt()
     val rust = 0xff96462c.toInt()
 }
 
@@ -47,7 +49,7 @@ internal fun Context.action(
     gravity = Gravity.CENTER
     minimumHeight = dp(48)
     setPadding(dp(12), 0, dp(12), 0)
-    background = RippleDrawable(ColorStateList.valueOf(0x254b816d),
+    background = RippleDrawable(ColorStateList.valueOf(0x25306679),
         panel(if (primary) Palette.green else Palette.white, 16, if (primary) 0 else Palette.border), null)
     if (description != null) contentDescription = description
     isFocusable = true
@@ -189,8 +191,8 @@ internal fun Context.navigationAction(title: String, icon: NavIcon, selected: Bo
         isSelected = selected
         val ink = if (selected) Palette.pine else Palette.muted
         setTextColor(ink)
-        background = RippleDrawable(ColorStateList.valueOf(0x254b816d),
-            panel(if (selected) Palette.pale else Palette.white, 14), null)
+        background = RippleDrawable(ColorStateList.valueOf(0x25306679),
+            panel(if (selected) Palette.pale else Color.TRANSPARENT, 14), null)
         val glyph = object : android.graphics.drawable.Drawable() {
             private val pen = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = ink
@@ -305,8 +307,10 @@ internal fun Context.mapAction(icon: MapIcon, primary: Boolean = false, click: (
         tooltipText = icon.description
         minimumWidth = dp(48)
         minimumHeight = dp(48)
-        background = RippleDrawable(ColorStateList.valueOf(0x254b816d),
-            panel(if (primary) Palette.green else Palette.white, 16, if (primary) 0 else Palette.border), null)
+        background = RippleDrawable(ColorStateList.valueOf(0x25306679),
+            panel(if (primary) Palette.floatingAccent else Palette.floatingSurface, 17,
+                if (primary) 0 else Palette.border), null)
+        elevation = dp(3).toFloat()
         scaleType = android.widget.ImageView.ScaleType.CENTER
         setPadding(0, 0, 0, 0)
         setOnClickListener { click() }
@@ -442,7 +446,7 @@ internal fun Context.editorAction(done: Boolean, click: () -> Unit) =
         contentDescription = if (done) "Сохранить и закрыть" else "Назад"
         minimumWidth = dp(48)
         minimumHeight = dp(48)
-        background = RippleDrawable(ColorStateList.valueOf(0x254b816d),
+        background = RippleDrawable(ColorStateList.valueOf(0x25306679),
             panel(if (done) Palette.green else Palette.pale, 24), null)
         scaleType = android.widget.ImageView.ScaleType.CENTER
         setPadding(0, 0, 0, 0)

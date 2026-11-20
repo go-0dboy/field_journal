@@ -2,18 +2,18 @@
     <style name="FieldThemeBase" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:alertDialogTheme">@style/FieldAlertDialog</item>
-        <item name="android:colorAccent">#21604C</item>
+        <item name="android:colorAccent">#196475</item>
         <item name="android:windowLightStatusBar">true</item>
         <item name="android:windowActionModeOverlay">true</item>
-        <item name="android:windowBackground">#F4F5F0</item>
+        <item name="android:windowBackground">#F3F6F8</item>
     </style>
     <style name="FieldAlertDialog" parent="android:style/Theme.Material.Light.Dialog.Alert">
         <item name="android:windowBackground">@drawable/field_dialog_background</item>
         <item name="android:backgroundDimAmount">0.33</item>
         <item name="android:windowMinWidthMinor">90%</item>
         <item name="android:windowMinWidthMajor">52%</item>
-        <item name="android:colorAccent">#21604C</item>
-        <item name="android:textColorPrimary">#1D2E25</item>
+        <item name="android:colorAccent">#196475</item>
+        <item name="android:textColorPrimary">#1C2C35</item>
         <item name="android:buttonBarButtonStyle">@style/FieldDialogButton</item>
         <item name="android:buttonBarPositiveButtonStyle">@style/FieldDialogButton</item>
         <item name="android:buttonBarNeutralButtonStyle">@style/FieldDialogButton</item>
@@ -21,7 +21,7 @@
     </style>
     <style name="FieldDialogButton" parent="android:style/Widget.Material.Button.Borderless">
         <item name="android:textAllCaps">false</item>
-        <item name="android:textColor">#21604C</item>
+        <item name="android:textColor">#196475</item>
         <item name="android:minHeight">48dp</item>
     </style>
     <style name="FieldTheme" parent="FieldThemeBase"/>

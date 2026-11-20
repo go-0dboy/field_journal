@@ -30,6 +30,12 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
     private var referenceInfo: OfflineInfo? = null
     private var onlineReferences = false
     private var attribution = emptyList<String>()
+    var footerInset = 0
+        set(value) {
+            if (field == value) return
+            field = value
+            invalidate()
+        }
     var onTap: ((Coordinate, Site?) -> Unit)? = null
     var onMove: ((Coordinate, Double) -> Unit)? = null
     var onVertexTap: ((Int) -> Unit)? = null
@@ -229,7 +235,7 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        canvas.drawColor(0xffe3e8db.toInt())
+        canvas.drawColor(0xffe8efeb.toInt())
         drawGrid(canvas)
         val baseZoom = if (offline) offlineInfo?.maxZoom else if (layer == MapLayer.STREET) 19 else 22
         val baseDrawn = baseZoom?.let { drawTiles(canvas, TilePass.BASE, it) } ?: false
@@ -287,6 +293,7 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
             canvas.drawCircle(p.x, p.y, 7 * scale, paint)
         }
         if (crosshair) drawCrosshair(canvas)
+        val footer = height - footerInset
         val creditLines = attribution.flatMap { credit -> wrapMapLabel(credit, 9f) }
         if (!baseDrawn && !historyDrawn && pending.isEmpty()) {
             val message = when {
@@ -297,15 +304,15 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
             }
             message?.let {
                 val lines = wrapMapLabel(it, 11f)
-                val bottom = height - (38 + 12 * creditLines.size) * scale
+                val bottom = footer - (38 + 12 * creditLines.size) * scale
                 lines.forEachIndexed { index, line ->
                     drawLabel(canvas, line, 12 * scale, bottom - 15 * scale * (lines.lastIndex - index))
                 }
             }
         }
-        drawScale(canvas, creditLines.size)
+        drawScale(canvas, footer, creditLines.size)
         creditLines.forEachIndexed { index, line ->
-            drawLabel(canvas, line, 12 * scale, height - (7 + 11 * (creditLines.lastIndex - index)) * scale, 9f)
+            drawLabel(canvas, line, 12 * scale, footer - (7 + 11 * (creditLines.lastIndex - index)) * scale, 9f)
         }
     }
 
@@ -327,7 +334,7 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
     }
 
     private fun drawGrid(canvas: Canvas) {
-        paint.color = 0xffcbd4c6.toInt()
+        paint.color = 0xffd1ddd7.toInt()
         paint.strokeWidth = scale
         val spacing = 64 * scale
         var x = (-rootX % spacing).toFloat()
@@ -443,12 +450,12 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
 
     private fun metersPerPixel() = 40075016.686 * cos(Math.toRadians(center.latitude)) / world
 
-    private fun drawScale(canvas: Canvas, creditLines: Int) {
+    private fun drawScale(canvas: Canvas, footer: Int, creditLines: Int) {
         val approximate = metersPerPixel() * 94 * scale
         val unit = 10.0.pow(floor(log10(approximate)))
         val distance = listOf(1, 2, 5).last { it * unit <= approximate + 1e-10 } * unit
         val x = 12 * scale
-        val y = height - (13 + 12 * creditLines) * scale
+        val y = footer - (13 + 12 * creditLines) * scale
         val w = (distance / metersPerPixel()).toFloat()
         val text = when {
             distance >= 1000 -> "${(distance / 1000).roundToInt()} км"

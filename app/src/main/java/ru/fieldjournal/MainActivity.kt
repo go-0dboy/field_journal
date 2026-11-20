@@ -8,6 +8,8 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.ContentResolver
 import android.content.Intent
+import android.graphics.Color
+import android.graphics.Typeface
 import android.net.Uri
 import android.net.http.HttpResponseCache
 import android.os.Bundle
@@ -16,6 +18,7 @@ import android.os.Looper
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.provider.Settings
+import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
 import android.view.WindowInsets
@@ -79,9 +82,11 @@ class MainActivity : Activity() {
     private lateinit var map: FieldMap
     private lateinit var mapPanel: FrameLayout
     private lateinit var mapCoordinates: TextView
-    private lateinit var mapElevation: TextView
     private lateinit var mapArea: TextView
+    private lateinit var mapZoomButtons: View
     private lateinit var mapLocationButton: View
+    private lateinit var statusBarScrim: View
+    private lateinit var navigationBarScrim: View
     private val handler = Handler(Looper.getMainLooper())
     private val hideNotice = Runnable { notice.visibility = View.GONE }
     private var tab = Tab.MAP
@@ -167,14 +172,15 @@ class MainActivity : Activity() {
         header = vertical()
         notice = label("", 14f, android.graphics.Color.WHITE).apply {
             visibility = View.GONE
-            background = panel(0xee27312e.toInt(), 20)
+            background = panel(0xee18353d.toInt(), 18)
             setPadding(dp(16), dp(10), dp(16), dp(10))
             accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         }
         content = FrameLayout(this)
         nav = horizontal().apply {
             setPadding(dp(5), dp(4), dp(5), dp(4))
-            background = panel(Palette.white, 23, Palette.border)
+            isClickable = true
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }
         root.addView(header, -1, -2)
         root.addView(content, LinearLayout.LayoutParams(-1, 0, 1f))
@@ -201,8 +207,9 @@ class MainActivity : Activity() {
                 marginEnd = dp(16)
                 bottomMargin = dp(24)
             })
-            viewTreeObserver.addOnGlobalLayoutListener { positionNotice() }
+            viewTreeObserver.addOnGlobalLayoutListener { positionOverlays() }
         }
+        drawBehindSystemBars()
         setContentView(screen)
         if (android.os.Build.VERSION.SDK_INT >= 30) {
             window.insetsController?.setSystemBarsAppearance(
@@ -317,6 +324,21 @@ class MainActivity : Activity() {
         }
     }
 
+    @Suppress("DEPRECATION")
+    private fun drawBehindSystemBars() {
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            window.setDecorFitsSystemWindows(false)
+        } else {
+            window.decorView.systemUiVisibility = window.decorView.systemUiVisibility or
+                View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+        }
+        if (android.os.Build.VERSION.SDK_INT < 35) {
+            window.statusBarColor = Color.TRANSPARENT
+            window.navigationBarColor = Color.TRANSPARENT
+        }
+    }
+
     private fun render() {
         rememberCatalogPosition()
         catalogView = null
@@ -324,6 +346,8 @@ class MainActivity : Activity() {
         content.removeAllViews()
         header.removeAllViews()
         nav.removeAllViews()
+        screen.removeView(mapPanel)
+        root.setBackgroundColor(Palette.paper)
         if (editorId != null) {
             val id = requireNotNull(editorId)
             val draft = draftToOpen?.takeIf { it.id == id } ?: if (editorIsNote) {
@@ -350,13 +374,17 @@ class MainActivity : Activity() {
             }
         }
         updateNavigationVisibility()
+        val onMap = tab == Tab.MAP
+        nav.background = panel(if (onMap) Palette.floatingSurface else Palette.white, 22, Palette.border)
+        nav.elevation = if (onMap) dp(4).toFloat() else 0f
         for (item in Tab.entries) {
             val button = navigationAction(item.title, item.icon, item == tab) { switch(item) }
             nav.addView(button, LinearLayout.LayoutParams(0, -2, 1f))
         }
         when (tab) {
             Tab.MAP -> {
-                content.addView(mapPanel, -1, -1)
+                root.setBackgroundColor(Color.TRANSPARENT)
+                screen.addView(mapPanel, 0, FrameLayout.LayoutParams(-1, -1))
                 refreshMap()
                 updateControls()
             }
@@ -433,38 +461,60 @@ class MainActivity : Activity() {
                 updateMapDraft()
             }
         }
-        mapCoordinates = label("", 13f, Palette.pine, true).apply {
-            typeface = android.graphics.Typeface.MONOSPACE
-            gravity = Gravity.END
+        fun mapCaption(size: Float) = label("", size, Palette.pine, true).apply {
+            setSingleLine(true)
+            ellipsize = TextUtils.TruncateAt.END
+            setPadding(dp(12), dp(3), dp(12), dp(3))
+            setShadowLayer(dp(2).toFloat(), 0f, 0f, Color.WHITE)
         }
-        mapElevation = label("", 12f, Palette.muted).apply { gravity = Gravity.END }
-        mapArea = label("", 12f, Palette.muted).apply { gravity = Gravity.END }
+        mapCoordinates = mapCaption(12f).apply {
+            typeface = Typeface.create("monospace", Typeface.BOLD)
+        }
+        mapArea = mapCaption(12f)
         mapPanel = FrameLayout(this).apply {
             addView(map, FrameLayout.LayoutParams(-1, -1))
-            val controls = vertical().apply {
-                gravity = Gravity.END
-                addView(vertical().apply {
-                    background = panel(Palette.white, 14, Palette.border)
-                    setPadding(dp(10), dp(6), dp(10), dp(6))
-                    addView(mapCoordinates, -1, -2)
-                    addView(mapElevation, -1, -2)
-                    addView(mapArea, -1, -2)
-                }, -2, -2)
-                for ((icon, delta) in listOf(MapIcon.ZOOM_IN to 1.0, MapIcon.ZOOM_OUT to -1.0)) {
-                    addView(mapAction(icon) { map.zoomBy(delta) },
-                        LinearLayout.LayoutParams(dp(48), dp(48)).apply { topMargin = dp(6) })
-                }
+            statusBarScrim = View(this@MainActivity).apply { setBackgroundColor(Palette.floatingSurface) }
+            addView(statusBarScrim, FrameLayout.LayoutParams(-1, 0, Gravity.TOP))
+            navigationBarScrim = View(this@MainActivity).apply { setBackgroundColor(Palette.floatingSurface) }
+            addView(navigationBarScrim, FrameLayout.LayoutParams(-1, 0, Gravity.BOTTOM))
+
+            mapZoomButtons = vertical().apply {
+                clipChildren = false
+                clipToPadding = false
+                addView(mapAction(MapIcon.ZOOM_IN) { map.zoomBy(1.0) }, dp(48), dp(48))
+                addView(mapAction(MapIcon.ZOOM_OUT) { map.zoomBy(-1.0) },
+                    LinearLayout.LayoutParams(dp(48), dp(48)).apply { topMargin = dp(8) })
             }
-            addView(controls, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply {
-                topMargin = dp(10)
-                marginEnd = dp(10)
-            })
+            addView(mapZoomButtons, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER_VERTICAL or Gravity.END))
             mapLocationButton = mapAction(MapIcon.LOCATION) { requestLocation() }
-            addView(mapLocationButton, FrameLayout.LayoutParams(dp(48), dp(48), Gravity.BOTTOM or Gravity.END).apply {
-                bottomMargin = dp(32)
-                marginEnd = dp(10)
-            })
+            addView(mapLocationButton, FrameLayout.LayoutParams(dp(48), dp(48), Gravity.BOTTOM or Gravity.END))
         }
+    }
+
+    private fun positionOverlays() {
+        if (this::mapPanel.isInitialized) positionMapOverlays()
+        positionNotice()
+    }
+
+    private fun positionMapOverlays() {
+        if (mapPanel.parent !== screen || screen.height == 0) return
+        val bottom = if (nav.isShown && nav.height > 0) screen.height - nav.top else root.paddingBottom
+        map.footerInset = bottom
+        fun position(view: View, height: Int? = null, end: Int? = null, bottom: Int? = null) {
+            val params = view.layoutParams as FrameLayout.LayoutParams
+            if ((height == null || height == params.height) &&
+                (end == null || end == params.marginEnd) &&
+                (bottom == null || bottom == params.bottomMargin)) return
+            height?.let { params.height = it }
+            end?.let { params.marginEnd = it }
+            bottom?.let { params.bottomMargin = it }
+            view.layoutParams = params
+        }
+        val right = (if (root.layoutDirection == View.LAYOUT_DIRECTION_RTL) root.paddingLeft else root.paddingRight) + dp(12)
+        position(statusBarScrim, height = root.paddingTop)
+        position(navigationBarScrim, height = root.paddingBottom)
+        position(mapZoomButtons, end = right)
+        position(mapLocationButton, end = right, bottom = bottom + dp(12))
     }
 
     private fun refreshMap() {
@@ -492,11 +542,16 @@ class MainActivity : Activity() {
         val pointFix = measured?.takeIf { it.point == point }
         val savedPoint = geometryDraft?.site?.takeIf { it.vertices.singleOrNull() == point }
         val altitude = pointFix?.altitude ?: savedPoint?.altitude
-        mapCoordinates.text = point.display()
-        mapElevation.text = buildString {
-            append("Высота ")
-            append(altitude?.let { "${it.roundToInt()} м" } ?: "—")
-            pointFix?.let { append(" · ±${it.accuracy.roundToInt()} м") }
+        val height = altitude?.let { "${it.roundToInt()} м" } ?: "—"
+        val accuracy = pointFix?.let { "±${it.accuracy.roundToInt()} м" }
+        mapCoordinates.text = buildString {
+            append(point.display())
+            accuracy?.let { append(" $it") }
+            append(" · Выс. $height")
+        }
+        mapCoordinates.contentDescription = buildString {
+            append("${point.display()}, высота $height")
+            accuracy?.let { append(", точность координат $it") }
         }
         val drawingArea = drawMode == DrawMode.AREA || drawMode == DrawMode.MOVE_AREA
         mapArea.visibility = if (drawingArea) View.VISIBLE else View.GONE
@@ -519,8 +574,11 @@ class MainActivity : Activity() {
     private fun updateControls() {
         updateMapStatus()
         header.removeAllViews()
+        header.addView(mapCoordinates, -1, -2)
         header.addView(horizontal().apply {
-            setPadding(dp(10), dp(6), dp(10), dp(6))
+            setPadding(dp(12), dp(5), dp(12), dp(6))
+            clipChildren = false
+            clipToPadding = false
             fun control(icon: MapIcon, primary: Boolean = false, click: () -> Unit) {
                 addView(mapAction(icon, primary, click),
                     LinearLayout.LayoutParams(dp(48), dp(48)).apply {
@@ -559,6 +617,7 @@ class MainActivity : Activity() {
                 }
             }
         }, -1, -2)
+        header.addView(mapArea, -1, -2)
     }
 
     private fun beginDraw(mode: DrawMode) {

@@ -166,7 +166,7 @@ class MapEditingTest {
         }
     }
 
-    @Test fun mapReadoutStaysTopRightAndUsesAltitudeOnlyForMeasuredCoordinates() {
+    @Test fun fullScreenMapKeepsAnUnboxedSingleLineReadoutAndReceivesTouches() {
         val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
         try {
             val activity = controller.get()
@@ -188,26 +188,35 @@ class MapEditingTest {
             root.icon(MapIcon.LOCATION).performClick()
             layout(root)
             val point = Coordinate(59.0, 33.0)
-            val readout = root.text(point.display())
+            layout(root)
+            val readout = root.text("${point.display()} ±8 м · Выс. 123 м")
             val mapPosition = IntArray(2).also(map::getLocationInWindow)
             val readoutPosition = IntArray(2).also(readout::getLocationInWindow)
-            assertTrue(readoutPosition[1] - mapPosition[1] in 0..22)
-            assertTrue(mapPosition[0] + map.width - (readoutPosition[0] + readout.width) in 0..22)
-            assertTrue(root.text("Высота 123 м · ±8 м").isShown)
+            assertEquals(root.width, map.width)
+            assertEquals(root.height, map.height)
+            assertTrue(readoutPosition[1] - mapPosition[1] in 0..50)
+            assertTrue(readoutPosition[0] + readout.paddingLeft - mapPosition[0] in 0..22)
+            assertEquals(1, readout.lineCount)
+            assertNull(readout.background)
+            assertTrue(readout.contentDescription.toString().contains("±8 м"))
+            assertTrue(map.footerInset > 0)
+            assertEquals(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT,
+                activity.packageManager.getActivityInfo(activity.componentName, 0).screenOrientation)
+            assertTrue(root.icon(MapIcon.LAYERS).elevation > 0f)
+            assertTrue(android.graphics.Color.alpha(Palette.floatingSurface) in 1..254)
 
             root.icon(MapIcon.POINT).performClick()
             layout(root)
             val confirm = root.icon(MapIcon.SET_POINT)
             assertTrue(root.icon(MapIcon.CANCEL).left > confirm.left)
-            tap(map, 70f, 200f)
-            assertTrue(root.text(requireNotNull(map.pointPreview).display()).isShown)
-            assertTrue(root.text("Высота —").isShown)
+            tap(root, 70f, 200f)
+            val preview = requireNotNull(map.pointPreview)
+            assertTrue(root.text("${preview.display()} · Выс. —").isShown)
             root.icon(MapIcon.CANCEL).performClick()
 
             root.icon(MapIcon.AREA).performClick()
             root.icon(MapIcon.ADD_VERTEX).performClick()
-            assertTrue(root.text(point.display()).isShown)
-            assertTrue(root.text("Высота 123 м · ±8 м").isShown)
+            assertTrue(root.text("${point.display()} ±8 м · Выс. 123 м").isShown)
             assertTrue(root.descendants().filterIsInstance<TextView>().any { it.text.startsWith("Вершин 1 ·") })
         } finally {
             controller.pause().stop().destroy()

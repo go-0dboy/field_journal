@@ -106,28 +106,35 @@ internal data class Site(
     }
 
     companion object {
-        fun read(feature: JSONObject, withAttachments: Boolean, validate: Boolean = true): Site {
+        fun read(
+            feature: JSONObject, withAttachments: Boolean, validate: Boolean = true,
+            validateTopology: Boolean = validate
+        ): Site {
             require(feature.getString("type") == "Feature") { "Ожидается объект GeoJSON Feature" }
+            val p = feature.optJSONObject("properties") ?: JSONObject()
+            val title = p.optString("title").ifBlank { p.optString("name", "Объект без названия") }
             val geometry = feature.getJSONObject("geometry")
             val coords = geometry.getJSONArray("coordinates")
             val rings = when (geometry.getString("type")) {
                 "Point" -> listOf(listOf(Coordinate.read(coords)))
-                "Polygon" -> coords.arrays().map { ring ->
+                "Polygon" -> coords.arrays().mapIndexed { index, ring ->
                     val points = ring.arrays().map(Coordinate::read)
-                    require(points.size >= 4 && points.first() == points.last()) { "Контур GeoJSON должен быть замкнут" }
+                    require(points.size >= 4 && points.first() == points.last()) { "«$title», контур ${index + 1} должен быть замкнут" }
                     points.dropLast(1).also {
-                        require(!validate || validPolygon(it)) { "Контур должен содержать ≥ 3 разные вершины без самопересечений" }
+                        if (validate) polygonError(it)?.let { error ->
+                            throw IllegalArgumentException("«$title», контур ${index + 1}. ${error.message}")
+                        }
                     }
                 }.also { require(it.isNotEmpty()) { "У полигона отсутствует контур" } }
                 else -> error("Поддерживаются геометрии Point и Polygon")
             }
-            val p = feature.optJSONObject("properties") ?: JSONObject()
+            if (validateTopology) holeError(rings)?.let { error -> throw IllegalArgumentException("«$title». $error") }
             val attachments = if (withAttachments) p.array("attachments").objects().map(Attachment::read) else emptyList()
             val created = p.optLong("created", System.currentTimeMillis())
             val id = feature.optString("id").takeIf { !feature.isNull("id") && it.isNotBlank() }
                 ?: if (withAttachments) newId() else UUID.nameUUIDFromBytes(feature.toString().toByteArray(Charsets.UTF_8)).toString()
             return Site(
-                id, p.optString("title").ifBlank { p.optString("name", "Объект без названия") },
+                id, title,
                 p.optString("type", "other"), rings.first(), rings.drop(1), p.optString("description"),
                 p.optString("period"), p.optString("culture"), p.optString("condition"),
                 p.optString("inventory"), p.optString("author"), p.optString("confidence"),
@@ -221,14 +228,6 @@ internal fun polygonError(points: List<Coordinate>): BoundaryError? {
     val plane = points.map { longitudeDelta(it.longitude, reference.longitude) to it.latitude - reference.latitude }
     if (plane.distinct().size != plane.size) return BoundaryError.REPEATED
 
-    fun orientation(a: Pair<Double, Double>, b: Pair<Double, Double>, c: Pair<Double, Double>): Int {
-        val left = (b.first - a.first) * (c.second - a.second)
-        val right = (b.second - a.second) * (c.first - a.first)
-        val cross = left - right
-        if (abs(cross) <= 4 * Math.ulp(max(abs(left), abs(right)))) return 0
-        return if (cross < 0) -1 else 1
-    }
-
     if (plane.drop(2).all { orientation(plane[0], plane[1], it) == 0 }) return BoundaryError.NO_AREA
 
     for (i in plane.indices) {
@@ -242,10 +241,60 @@ internal fun polygonError(points: List<Coordinate>): BoundaryError? {
             if (i == 0 && j == plane.lastIndex) continue
             val c = plane[j]
             val d = plane[(j + 1) % plane.size]
-            if (max(min(a.first, b.first), min(c.first, d.first)) > min(max(a.first, b.first), max(c.first, d.first)) ||
-                max(min(a.second, b.second), min(c.second, d.second)) > min(max(a.second, b.second), max(c.second, d.second))) continue
-            if (orientation(a, b, c) * orientation(a, b, d) <= 0 &&
-                orientation(c, d, a) * orientation(c, d, b) <= 0) return BoundaryError.CROSSED
+            if (segmentsMeet(a, b, c, d)) return BoundaryError.CROSSED
+        }
+    }
+    return null
+}
+
+private fun orientation(a: Pair<Double, Double>, b: Pair<Double, Double>, c: Pair<Double, Double>): Int {
+    val left = (b.first - a.first) * (c.second - a.second)
+    val right = (b.second - a.second) * (c.first - a.first)
+    val cross = left - right
+    if (abs(cross) <= 4 * Math.ulp(max(abs(left), abs(right)))) return 0
+    return if (cross < 0) -1 else 1
+}
+
+private fun segmentsMeet(
+    a: Pair<Double, Double>, b: Pair<Double, Double>, c: Pair<Double, Double>, d: Pair<Double, Double>
+): Boolean {
+    if (max(min(a.first, b.first), min(c.first, d.first)) > min(max(a.first, b.first), max(c.first, d.first)) ||
+        max(min(a.second, b.second), min(c.second, d.second)) > min(max(a.second, b.second), max(c.second, d.second))) return false
+    return orientation(a, b, c) * orientation(a, b, d) <= 0 &&
+        orientation(c, d, a) * orientation(c, d, b) <= 0
+}
+
+internal fun holeError(rings: List<List<Coordinate>>): String? {
+    if (rings.size < 2) return null
+    val reference = rings.first().first()
+    val plane = rings.map { ring -> ring.map { longitudeDelta(it.longitude, reference.longitude) to it.latitude - reference.latitude } }
+
+    fun contains(ring: List<Pair<Double, Double>>, point: Pair<Double, Double>): Boolean {
+        var inside = false
+        for (i in ring.indices) {
+            val (ax, ay) = ring[i]
+            val (bx, by) = ring[(i + 1) % ring.size]
+            if ((ay > point.second) != (by > point.second) &&
+                point.first < ax + (bx - ax) * (point.second - ay) / (by - ay)) inside = !inside
+        }
+        return inside
+    }
+
+    fun boundariesMeet(a: List<Pair<Double, Double>>, b: List<Pair<Double, Double>>) = a.indices.any { i ->
+        b.indices.any { j -> segmentsMeet(a[i], a[(i + 1) % a.size], b[j], b[(j + 1) % b.size]) }
+    }
+
+    val outer = plane.first()
+    for (i in 1 until plane.size) {
+        val hole = plane[i]
+        if (!contains(outer, hole.first()) || boundariesMeet(outer, hole)) {
+            return "Внутренний контур $i должен полностью лежать внутри внешнего"
+        }
+        for (j in 1 until i) {
+            val other = plane[j]
+            if (contains(other, hole.first()) || contains(hole, other.first()) || boundariesMeet(hole, other)) {
+                return "Внутренние контуры $j и $i перекрываются или касаются"
+            }
         }
     }
     return null

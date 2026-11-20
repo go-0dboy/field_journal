@@ -311,7 +311,7 @@ internal class JournalEditor(
 
     private fun addRelatedNotes() {
         section("Полевой дневник")
-        for (entry in activity.store.notes().filter { it.siteId == owner }.sortedByDescending(Note::created)) {
+        for (entry in activity.store.noteSummaries(owner)) {
             body.addView(activity.action("${entry.title} · ${dateLabel(entry.created)}") { activity.openRelatedNote(entry.id) }, -1, -2)
             body.addSpace(4)
         }

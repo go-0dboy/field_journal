@@ -75,8 +75,8 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
         offlineInfo = if (offline) tiles.info(tiles.baseArchive(layer)) else null
         historyInfo = if (tiles.historicalEnabled) tiles.info(MapPackage.HISTORICAL) else null
         val showReferences = tiles.showReferences()
-        onlineReferences = showReferences && !offline
-        referenceInfo = if (showReferences && offline) tiles.info(MapPackage.REFERENCES) else null
+        onlineReferences = showReferences && tiles.referenceSource() == ReferenceSource.ESRI
+        referenceInfo = if (showReferences && !onlineReferences) tiles.info(MapPackage.REFERENCES) else null
         attribution = listOfNotNull(
             tiles.credit(layer, offline).takeIf(String::isNotBlank),
             historyInfo?.let { it.attribution.ifBlank { it.name } },
@@ -99,14 +99,15 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
     }
 
     fun show(site: Site) {
+        val anchor = site.anchor
         if (!site.area || width == 0 || height == 0) {
-            moveTo(site.anchor, 16.0)
+            moveTo(anchor, 16.0)
             return
         }
-        val longitudeSpan = site.vertices.maxOf { abs(longitudeDelta(it.longitude, site.anchor.longitude)) } / 360 * 2
-        val latitudeSpan = site.vertices.maxOf { abs(mercator(it.latitude) - mercator(site.anchor.latitude)) } * 2
+        val longitudeSpan = site.vertices.maxOf { abs(longitudeDelta(it.longitude, anchor.longitude)) } / 360 * 2
+        val latitudeSpan = site.vertices.maxOf { abs(mercator(it.latitude) - mercator(anchor.latitude)) } * 2
         val factor = min(width * 0.7 / max(longitudeSpan, 1e-8), height * 0.65 / max(latitudeSpan, 1e-8))
-        moveTo(site.anchor, log2(factor / (256 * scale)).coerceAtMost(19.0))
+        moveTo(anchor, log2(factor / (256 * scale)).coerceAtMost(19.0))
     }
 
     fun zoomBy(delta: Double) = moveTo(center, zoom + delta)
@@ -238,7 +239,7 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
         if (onlineReferences) {
             drawTiles(canvas, TilePass.ROADS, 19)
             drawTiles(canvas, TilePass.PLACES, 19)
-        } else referenceInfo?.let { drawTiles(canvas, TilePass.PLACES, it.maxZoom) }
+        } else referenceInfo?.let { drawTiles(canvas, TilePass.LOCAL_REFERENCES, it.maxZoom) }
         val hasTiles = baseDrawn || historyDrawn
         if (offline && !hasTiles && pending.isEmpty()) {
             val message = if (offlineInfo == null) "Подключите офлайн-карту в разделе «Слои»" else "Для этого участка нет офлайн-тайлов"

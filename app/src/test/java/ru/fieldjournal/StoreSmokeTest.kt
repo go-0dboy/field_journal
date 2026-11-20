@@ -55,6 +55,58 @@ class StoreSmokeTest {
         assertFalse(destinationOpened)
     }
 
+    @Test fun geoJsonUsesTheSameLimitInBothDirectionsAndRollsBackInvalidImport() {
+        val context = RuntimeEnvironment.getApplication()
+        val store = JournalStore(context, geoJsonLimit = 850)
+        val site = Site(title = "Стоянка", vertices = listOf(Coordinate(59.0, 33.0)))
+        store.save(site)
+        val geojson = ByteArrayOutputStream().also(store::exportGeoJson).toByteArray()
+        store.deleteSite(site.id)
+        assertEquals(ImportResult(1, 0, 0), store.importGeoJson(geojson.inputStream()))
+        assertEquals(ImportResult(0, 0, 1), store.importGeoJson(geojson.inputStream()))
+        val second = site.copy(id = "second")
+        val invalidCollection = """{"features":[${second.feature()},{}],"type":"FeatureCollection"}"""
+        assertThrows(Exception::class.java) { store.importGeoJson(invalidCollection.byteInputStream()) }
+        assertNull(store.site(second.id))
+        val oversized = site.copy(description = "я".repeat(1000))
+        store.save(oversized)
+        assertThrows(IllegalArgumentException::class.java) {
+            store.exportGeoJson { fail("Opened an oversized export destination"); ByteArrayOutputStream() }
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            store.importGeoJson(oversized.feature().toString().byteInputStream())
+        }
+        store.close()
+    }
+
+    @Test fun migrationIndexesRelatedNotesWithoutRewritingTheirContents() {
+        val context = RuntimeEnvironment.getApplication()
+        val site = Site(title = "Стоянка", vertices = listOf(Coordinate(59.0, 33.0)))
+        val earlier = Note(title = "Ранее", body = "Наблюдение", siteId = site.id, created = 10)
+        val later = Note(title = "Позже", siteId = site.id, created = 20)
+        val unrelated = Note(title = "Другой объект", created = 30)
+        context.openOrCreateDatabase("field-journal.db", 0, null).use { legacy ->
+            for (table in listOf("sites", "notes")) {
+                legacy.execSQL("CREATE TABLE $table (id TEXT PRIMARY KEY, updated INTEGER NOT NULL, payload TEXT NOT NULL)")
+            }
+            legacy.execSQL("INSERT INTO sites VALUES (?,?,?)", arrayOf(site.id, site.updated, site.feature().toString()))
+            for (entry in listOf(earlier, later, unrelated)) {
+                legacy.execSQL("INSERT INTO notes VALUES (?,?,?)", arrayOf(entry.id, entry.updated, entry.json().toString()))
+            }
+            legacy.version = 1
+        }
+        JournalStore(context).use { store ->
+            assertEquals(listOf(later.id, earlier.id), store.noteSummaries(site.id).map(NoteSummary::id))
+            assertEquals(listOf(unrelated.id, later.id, earlier.id), store.noteSummaries().map(NoteSummary::id))
+            assertEquals(earlier, store.note(earlier.id))
+            assertEquals(site.title, store.noteSummaries(site.id).first().siteTitle)
+            store.save(site.copy(title = "Переименована"))
+            assertEquals("Переименована", store.noteSummaries(site.id).first().siteTitle)
+            store.save(later.copy(siteId = null))
+            assertEquals(listOf(earlier.id), store.noteSummaries(site.id).map(NoteSummary::id))
+        }
+    }
+
     @Test fun failedWriteKeepsDraftOpenAndSurvivesRecreation() {
         val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
         val activity = controller.get()

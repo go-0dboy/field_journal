@@ -371,3 +371,28 @@ internal fun Context.editorAction(done: Boolean, click: () -> Unit) =
             override fun getOpacity() = PixelFormat.TRANSLUCENT
         })
     }
+
+@android.annotation.SuppressLint("ViewConstructor")
+internal class DiaryRow(context: Context) : LinearLayout(context) {
+    private val title = context.label("", 16f, Palette.ink, true)
+    private val detail = context.label("", 13f, Palette.muted)
+
+    init {
+        gravity = Gravity.CENTER_VERTICAL
+        background = context.panel(Palette.white, 13, Palette.border)
+        setPadding(context.dp(12), context.dp(11), context.dp(12), context.dp(11))
+        minimumHeight = context.dp(64)
+        addView(context.vertical().apply {
+            addView(title)
+            addView(detail)
+        }, LayoutParams(0, -2, 1f))
+        addView(context.label("›", 22f, Palette.green).apply {
+            importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
+        })
+    }
+
+    fun bind(note: NoteSummary) {
+        title.text = note.title
+        detail.text = listOfNotNull(dateLabel(note.created), note.siteTitle).joinToString(" · ")
+    }
+}

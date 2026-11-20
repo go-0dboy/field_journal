@@ -54,4 +54,27 @@ class ModelTest {
         val note = Note(title = "Выезд", weather = "Облачно", siteId = "archive-1", created = 1000)
         assertEquals(note, Note.read(JSONObject(note.json().toString())))
     }
+    @Test fun polygonValidationRejectsExteriorAndOverlappingHoles() {
+        fun square(south: Double, west: Double, size: Double) = listOf(
+            Coordinate(south, west), Coordinate(south, west + size),
+            Coordinate(south + size, west + size), Coordinate(south + size, west)
+        )
+        val outer = square(58.0, 30.0, 0.5)
+        val hole = square(58.1, 30.1, 0.1)
+        val another = square(58.3, 30.3, 0.1)
+        val site = Site(title = "Тестовый участок", vertices = outer, holes = listOf(hole, another))
+        assertEquals(site, Site.read(site.feature(), withAttachments = false))
+        for (invalid in listOf(
+            listOf(square(59.0, 31.0, 0.1)),
+            listOf(square(58.0, 30.1, 0.1)),
+            listOf(hole, square(58.15, 30.15, 0.1)),
+            listOf(hole, square(58.12, 30.12, 0.02))
+        )) {
+            val error = assertThrows(IllegalArgumentException::class.java) {
+                Site.read(site.copy(holes = invalid).feature(), withAttachments = false)
+            }
+            assertTrue(error.message.orEmpty().contains(site.title))
+        }
+    }
+
 }

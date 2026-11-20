@@ -18,7 +18,19 @@ internal enum class MapLayer(val title: String, val archive: MapPackage) {
     HYBRID("Гибрид", MapPackage.HYBRID)
 }
 
-internal enum class TilePass { BASE, HISTORICAL, ROADS, PLACES }
+internal enum class TilePass { BASE, HISTORICAL, ROADS, PLACES, LOCAL_REFERENCES }
+
+internal enum class ReferenceSource(val title: String) {
+    ESRI("Онлайн · Esri"), LOCAL("Локальный пакет")
+}
+
+internal class PreparedRaster(
+    val slot: MapPackage, val file: File, val name: String, val options: List<OfflineInfo>, val preview: Bitmap?
+) : AutoCloseable {
+    override fun close() {
+        file.delete()
+    }
+}
 
 internal data class Tile(val z: Int, val x: Int, val y: Int)
 
@@ -48,6 +60,11 @@ internal class MapTiles(context: Context) {
         get() = settings.getBoolean("referencesEnabled", true)
         set(value) { settings.edit().putBoolean("referencesEnabled", value).apply() }
 
+    var onlineReferenceSource: ReferenceSource
+        get() = if (settings.getBoolean("localOnlineReferences", false)) ReferenceSource.LOCAL else ReferenceSource.ESRI
+        set(value) { settings.edit().putBoolean("localOnlineReferences", value == ReferenceSource.LOCAL).apply() }
+
+    fun referenceSource() = if (offline) ReferenceSource.LOCAL else onlineReferenceSource
     fun showReferences() = referencesEnabled && (layer == MapLayer.HYBRID || historicalEnabled)
 
     fun setViewport(center: Coordinate, zoom: Double) {
@@ -68,6 +85,7 @@ internal class MapTiles(context: Context) {
     private fun file(slot: MapPackage) = File(folder, "${slot.name}.mbtiles")
 
     private fun packageNameKey(slot: MapPackage) = "archive-name-${slot.name}"
+    private fun numberingKey(slot: MapPackage) = "archive-numbering-${slot.name}"
 
     fun baseArchive(layer: MapLayer) =
         if (layer == MapLayer.HYBRID && !file(MapPackage.HYBRID).isFile) MapPackage.SATELLITE else layer.archive
@@ -83,7 +101,8 @@ internal class MapTiles(context: Context) {
         val db = open(file)
         try {
             val name = settings.getString(packageNameKey(slot), "").orEmpty()
-            return Package(db, RasterArchive.open(db, name)).also { offlinePackages[slot] = it }
+            val numbering = SqliteNumbering.entries.find { it.name == settings.getString(numberingKey(slot), null) }
+            return Package(db, RasterArchive.open(db, name, numbering)).also { offlinePackages[slot] = it }
         } catch (e: Exception) {
             db.close()
             throw e
@@ -92,36 +111,47 @@ internal class MapTiles(context: Context) {
 
     private fun open(file: File) = SQLiteDatabase.openDatabase(file.path, null, SQLiteDatabase.OPEN_READONLY or SQLiteDatabase.NO_LOCALIZED_COLLATORS)
 
-    fun install(slot: MapPackage, input: InputStream, filename: String = ""): OfflineInfo {
+    fun prepare(slot: MapPackage, input: InputStream, filename: String): PreparedRaster {
         val temp = File(folder, "import-${newId()}.sqlite")
-        val fallbackName = filename.substringBeforeLast('.', filename)
+        val name = filename.substringBeforeLast('.', filename)
         try {
             temp.outputStream().use { input.copyLimited(it, 8L * 1024 * 1024 * 1024) }
-            val info = open(temp).use { db ->
-                val archive = RasterArchive.open(db, fallbackName)
-                val bytes = requireNotNull(archive.sample()) { "В карте нет тайлов" }
+            return open(temp).use { db ->
+                val options = RasterArchive.options(db, name)
+                val bytes = requireNotNull(options.first().sample()) { "В карте нет тайлов" }
                 val bitmap = requireNotNull(decode(bytes)) { "Не удалось прочитать растровый тайл" }
-                try {
-                    require(slot != MapPackage.REFERENCES || bitmap.hasAlpha()) {
-                        "Для подписей нужен прозрачный растр PNG или WebP"
-                    }
-                } finally {
+                if (slot == MapPackage.REFERENCES && !bitmap.hasAlpha()) {
                     bitmap.recycle()
+                    throw IllegalArgumentException("Для подписей нужен прозрачный растр PNG или WebP")
                 }
-                archive.info
+                val preview = bitmap.takeIf { options.size > 1 }
+                if (preview == null) bitmap.recycle()
+                PreparedRaster(slot, temp, name, options.map(RasterArchive::info), preview)
             }
-            synchronized(packageLock) {
-                offlinePackages.remove(slot)?.db?.close()
-                check(temp.renameTo(file(slot))) { "Не удалось установить слой карты" }
-                settings.edit().putString(packageNameKey(slot), fallbackName).apply()
-            }
-            return info
-        } catch (error: android.database.sqlite.SQLiteException) {
-            throw IllegalArgumentException("Не удалось прочитать карту. Нужен растровый MBTiles, SQLiteDB или GeoPackage", error)
-        } finally {
+        } catch (error: Exception) {
             temp.delete()
+            if (error is android.database.sqlite.SQLiteException) {
+                throw IllegalArgumentException("Не удалось прочитать карту. Нужен растровый MBTiles, SQLiteDB или GeoPackage", error)
+            }
+            throw error
         }
     }
+
+    fun install(prepared: PreparedRaster, numbering: SqliteNumbering? = null): OfflineInfo = prepared.use {
+        val info = if (numbering == null) {
+            requireNotNull(prepared.options.singleOrNull()) { "Выберите схему SQLiteDB: XYZ или BigPlanet" }
+        } else prepared.options.first { it.numbering == numbering }
+        val slot = prepared.slot
+        synchronized(packageLock) {
+            offlinePackages.remove(slot)?.db?.close()
+            check(prepared.file.renameTo(file(slot))) { "Не удалось установить слой карты" }
+            settings.edit().putString(packageNameKey(slot), prepared.name)
+                .putString(numberingKey(slot), info.numbering?.name).apply()
+        }
+        info
+    }
+
+    fun install(slot: MapPackage, input: InputStream, filename: String = "") = install(prepare(slot, input, filename))
 
     fun credit(layer: MapLayer, offline: Boolean): String = if (offline) {
         info(baseArchive(layer))?.let { it.attribution.ifBlank { "Локальная карта · ${it.format.title}" } }.orEmpty()
@@ -133,6 +163,7 @@ internal class MapTiles(context: Context) {
 
     fun read(layer: MapLayer, offline: Boolean, urls: String, tile: Tile, pass: TilePass): Bitmap? {
         if (pass == TilePass.HISTORICAL) return readOffline(MapPackage.HISTORICAL, tile)
+        if (pass == TilePass.LOCAL_REFERENCES) return readOffline(MapPackage.REFERENCES, tile)
         if (offline) return when (pass) {
             TilePass.BASE -> readOffline(baseArchive(layer), tile)
             TilePass.PLACES -> readOffline(MapPackage.REFERENCES, tile)

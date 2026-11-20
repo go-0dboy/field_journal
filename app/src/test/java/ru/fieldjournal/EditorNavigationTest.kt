@@ -50,6 +50,76 @@ class EditorNavigationTest {
         }
     }
 
+    @Test fun attachmentCopyReturnsToTheSameDraftAfterRecreation() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        val started = java.util.concurrent.CountDownLatch(1)
+        val resumeCopy = java.util.concurrent.CountDownLatch(1)
+        try {
+            val activity = controller.get()
+            val site = Site(title = "Стоянка", vertices = listOf(Coordinate(59.0, 33.0)))
+            activity.store.save(site)
+            activity.openSite(site.id)
+            val file = java.io.File(activity.cacheDir, "скан.jpg").apply { writeText("image bytes") }
+            val provider = object : android.content.ContentProvider() {
+                override fun onCreate() = true
+                override fun insert(uri: android.net.Uri, values: android.content.ContentValues?) = null
+                override fun delete(uri: android.net.Uri, selection: String?, selectionArgs: Array<out String>?) = 0
+                override fun update(
+                    uri: android.net.Uri, values: android.content.ContentValues?,
+                    selection: String?, selectionArgs: Array<out String>?
+                ) = 0
+
+                override fun openFile(uri: android.net.Uri, mode: String): android.os.ParcelFileDescriptor {
+                    started.countDown()
+                    check(resumeCopy.await(8, java.util.concurrent.TimeUnit.SECONDS))
+                    return android.os.ParcelFileDescriptor.open(file, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
+                }
+
+                override fun query(
+                    uri: android.net.Uri, projection: Array<out String>?, selection: String?,
+                    selectionArgs: Array<out String>?, sortOrder: String?
+                ) = android.database.MatrixCursor(arrayOf(android.provider.OpenableColumns.DISPLAY_NAME)).apply {
+                    addRow(arrayOf(file.name))
+                }
+
+                override fun getType(uri: android.net.Uri) = "image/jpeg"
+            }
+            val testAuthority = "journal.test.attachment"
+            provider.attachInfo(activity.applicationContext, android.content.pm.ProviderInfo().apply {
+                authority = testAuthority
+                exported = true
+            })
+            org.robolectric.shadows.ShadowContentResolver.registerProviderInternal(testAuthority, provider)
+            activity.pickAttachment(site.id, note = false, photoOnly = true)
+            val shadow = shadowOf(activity)
+            val request = shadow.nextStartedActivityForResult
+            shadow.receiveResult(request.intent, android.app.Activity.RESULT_OK, android.content.Intent().setData(
+                android.net.Uri.parse("content://$testAuthority/photo")
+            ))
+            assertTrue(started.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            controller.recreate()
+            val restored = controller.get()
+            resumeCopy.countDown()
+            val root = restored.window.decorView
+            val main = shadowOf(Looper.getMainLooper())
+            val timeout = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(6)
+            while (root.descendants().filterIsInstance<TextView>().none { it.text == file.name } &&
+                System.nanoTime() < timeout) {
+                main.idle()
+                Thread.sleep(10)
+            }
+            assertEquals(1, root.descendants().filterIsInstance<TextView>().count { it.text == file.name })
+            assertTrue(restored.store.site(site.id)!!.attachments.isEmpty())
+            restored.closeEditor()
+            chooseConfirmation("Сохранить")
+            val saved = restored.store.site(site.id)!!.attachments.single()
+            assertEquals("image bytes", restored.store.attachmentFile(saved.id).readText())
+        } finally {
+            resumeCopy.countDown()
+            controller.pause().stop().destroy()
+        }
+    }
+
     @Test fun noticesFloatAboveMapButtonsAndNewNotesRequireConfirmation() {
         val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
         try {

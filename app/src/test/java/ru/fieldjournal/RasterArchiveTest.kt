@@ -46,6 +46,31 @@ class RasterArchiveTest {
         }
     }
 
+    @Test fun ambiguousSqliteOffersBothLocationsAndRemembersTheSelectedGrid() {
+        val tile = Tile(5, 18, 9)
+        val source = sqliteDb("ambiguous", tile, false, null)
+        val prepared = source.inputStream().use { tiles.prepare(MapPackage.HISTORICAL, it, source.name) }
+        assertEquals(listOf(SqliteNumbering.XYZ, SqliteNumbering.BIG_PLANET), prepared.options.map(OfflineInfo::numbering))
+        assertEquals(listOf(5, 12), prepared.options.map(OfflineInfo::minZoom))
+        val center = requireNotNull(prepared.options.first().center)
+        assertEquals(28.125, center.longitude, 1e-10)
+        assertEquals(degreeLatitude(9.5 / 32), center.latitude, 1e-10)
+        assertNull(tiles.info(MapPackage.HISTORICAL))
+        tiles.install(prepared, SqliteNumbering.XYZ)
+        val reopened = MapTiles(context)
+        assertEquals(SqliteNumbering.XYZ, reopened.info(MapPackage.HISTORICAL)?.numbering)
+        assertEquals(Color.BLUE, pixel(reopened, tile))
+    }
+
+    @Test fun ambiguityDetectionChecksTilesAtIntermediateZooms() {
+        val source = sqliteDb("intermediate", Tile(5, 18, 9), false, null)
+        SQLiteDatabase.openDatabase(source.path, null, SQLiteDatabase.OPEN_READWRITE).use { db ->
+            db.execSQL("INSERT INTO tiles VALUES (10,10,11,0,?)", arrayOf(bitmap(Color.BLUE)))
+            db.execSQL("INSERT INTO tiles VALUES (400,400,10,0,?)", arrayOf(bitmap(Color.BLUE)))
+        }
+        assertEquals(SqliteNumbering.XYZ, install(source).numbering)
+    }
+
     @Test fun projectionMismatchLeavesInstalledRasterUntouched() {
         val tile = Tile(12, 2429, 1200)
         install(sqliteDb("valid", tile, true, "BigPlanet", invertedZoom = true))
@@ -79,6 +104,10 @@ class RasterArchiveTest {
         transparent.inputStream().use { tiles.install(MapPackage.REFERENCES, it) }
         val pixel = tiles.read(MapLayer.HYBRID, true, "", tile, TilePass.PLACES)?.getPixel(20, 20)
         assertEquals(0x80001824.toInt(), pixel)
+        tiles.onlineReferenceSource = ReferenceSource.LOCAL
+        assertEquals(ReferenceSource.LOCAL, MapTiles(context).referenceSource())
+        val online = tiles.read(MapLayer.HYBRID, false, "", tile, TilePass.LOCAL_REFERENCES)?.getPixel(20, 20)
+        assertEquals(0x80001824.toInt(), online)
     }
 
     private fun sqliteDb(

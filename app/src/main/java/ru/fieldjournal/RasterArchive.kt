@@ -8,13 +8,18 @@ internal enum class RasterFormat(val title: String) {
     MBTILES("MBTiles"), SQLITE_DB("SQLiteDB"), GEOPACKAGE("GeoPackage")
 }
 
+internal enum class SqliteNumbering(val title: String) {
+    XYZ("XYZ"), BIG_PLANET("BigPlanet")
+}
+
 internal data class OfflineInfo(
     val name: String,
     val attribution: String,
     val minZoom: Int,
     val maxZoom: Int,
     val center: Coordinate?,
-    val format: RasterFormat
+    val format: RasterFormat,
+    val numbering: SqliteNumbering? = null
 )
 
 internal class RasterArchive private constructor(
@@ -74,22 +79,35 @@ internal class RasterArchive private constructor(
         private const val HALF_WORLD = PI * 6_378_137.0
         private val images = setOf("png", "jpg", "jpeg", "webp")
 
-        fun open(db: SQLiteDatabase, fallbackName: String): RasterArchive {
+        fun open(db: SQLiteDatabase, fallbackName: String, numbering: SqliteNumbering? = null): RasterArchive =
+            options(db, fallbackName, numbering, inspectMissingNumbering = false).single()
+
+        fun options(
+            db: SQLiteDatabase, fallbackName: String, numbering: SqliteNumbering? = null,
+            inspectMissingNumbering: Boolean = true
+        ): List<RasterArchive> {
             val columns = columns(db, "tiles")
-            val (grid, metadata) = when {
-                hasGeoPackage(db) -> geoPackage(db)
-                columns.containsAll(listOf("zoom_level", "tile_column", "tile_row", "tile_data")) -> mbtiles(db)
-                columns.containsAll(listOf("z", "x", "y", "image")) -> sqliteDb(db, "s" in columns)
+            val (grids, metadata) = when {
+                hasGeoPackage(db) -> geoPackage(db).let { (grid, info) -> listOf(grid) to info }
+                columns.containsAll(listOf("zoom_level", "tile_column", "tile_row", "tile_data")) ->
+                    mbtiles(db).let { (grid, info) -> listOf(grid) to info }
+                columns.containsAll(listOf("z", "x", "y", "image")) ->
+                    sqliteDb(db, "s" in columns, numbering, inspectMissingNumbering)
                 else -> throw IllegalArgumentException("Файл должен быть растровой картой MBTiles, SQLiteDB или GeoPackage")
             }
-            val range = grid.zoomRange(db)
-            val tileCenter = grid.firstTileCenter(db, range.first)
-            val name = metadata["name"]?.takeIf(String::isNotBlank) ?: fallbackName.ifBlank { grid.format.title }
-            val info = OfflineInfo(
-                name, metadata["attribution"].orEmpty().replace(Regex("<[^>]+>"), ""),
-                range.first, range.last, metadataCenter(metadata) ?: tileCenter, grid.format
-            )
-            return RasterArchive(db, info, grid)
+            return grids.map { grid ->
+                val range = grid.zoomRange(db)
+                val tileCenter = grid.firstTileCenter(db, range.first)
+                val name = metadata["name"]?.takeIf(String::isNotBlank) ?: fallbackName.ifBlank { grid.format.title }
+                val numberingUsed = if (grid.format == RasterFormat.SQLITE_DB) {
+                    if (grid.invertedZoom) SqliteNumbering.BIG_PLANET else SqliteNumbering.XYZ
+                } else null
+                val info = OfflineInfo(
+                    name, metadata["attribution"].orEmpty().replace(Regex("<[^>]+>"), ""),
+                    range.first, range.last, metadataCenter(metadata) ?: tileCenter, grid.format, numberingUsed
+                )
+                RasterArchive(db, info, grid)
+            }
         }
 
         private fun mbtiles(db: SQLiteDatabase): Pair<TileGrid, Map<String, String>> {
@@ -108,7 +126,9 @@ internal class RasterArchive private constructor(
             return TileGrid(RasterFormat.MBTILES, "tiles", invertedY = true) to metadata
         }
 
-        private fun sqliteDb(db: SQLiteDatabase, hasLayer: Boolean): Pair<TileGrid, Map<String, String>> {
+        private fun sqliteDb(
+            db: SQLiteDatabase, hasLayer: Boolean, savedNumbering: SqliteNumbering?, inspectMissingNumbering: Boolean
+        ): Pair<List<TileGrid>, Map<String, String>> {
             val info = if (columns(db, "info").isEmpty()) emptyMap() else {
                 db.rawQuery("SELECT * FROM info LIMIT 1", null).use { cursor ->
                     if (!cursor.moveToFirst()) emptyMap() else buildMap {
@@ -119,24 +139,59 @@ internal class RasterArchive private constructor(
                 }
             }
             require(info["ellipsoid"] != "1") { "SQLiteDB с эллипсоидом Меркатора не поддерживается. Нужен Web Mercator (EPSG:3857)" }
-            val numbering = info["tilenumbering"]?.trim()?.lowercase()
-            require(numbering in listOf(null, "", "simple", "bigplanet", "xyz")) {
+            val rawNumbering = info["tilenumbering"]?.trim()?.lowercase()
+            val numbering = rawNumbering?.takeIf(String::isNotEmpty)
+            require(numbering in listOf(null, "simple", "bigplanet", "xyz")) {
                 "Неизвестная схема нумерации SQLiteDB: $numbering"
             }
             val layer = if (hasLayer) db.rawQuery("SELECT MIN(s) FROM tiles", null).use {
                 if (it.moveToFirst() && !it.isNull(0)) it.getLong(0) else null
             } else null
             val grid = TileGrid(RasterFormat.SQLITE_DB, "tiles", "z", "x", "y", "image",
-                invertedZoom = numbering == null || numbering == "bigplanet",
                 invertedY = info["inverted_y"] == "1", layer = layer)
-            // Old RMaps files omit info. Use BigPlanet unless the coordinates fit only the XYZ grid.
-            val numberingFits = numbering != null || runCatching {
-                val range = grid.zoomRange(db)
-                grid.firstTileCenter(db, range.first)
-                grid.firstTileCenter(db, range.last)
-            }.isSuccess
-            return (if (numberingFits) grid else grid.copy(invertedZoom = false)) to
-                (info + ("name" to (info["title"] ?: info["name"].orEmpty())))
+            val declared = when (numbering) {
+                "bigplanet" -> SqliteNumbering.BIG_PLANET
+                "simple", "xyz" -> SqliteNumbering.XYZ
+                else -> savedNumbering ?: SqliteNumbering.XYZ.takeIf { !inspectMissingNumbering && rawNumbering == "" }
+            }
+            val grids = when {
+                declared != null -> listOf(grid.copy(invertedZoom = declared == SqliteNumbering.BIG_PLANET))
+                inspectMissingNumbering -> detectSqliteGrids(db, grid)
+                else -> {
+                    // Retain the interpretation of maps installed by earlier versions.
+                    val legacy = grid.copy(invertedZoom = true)
+                    val legacyFits = runCatching {
+                        val range = legacy.zoomRange(db)
+                        legacy.firstTileCenter(db, range.first)
+                        legacy.firstTileCenter(db, range.last)
+                    }.isSuccess
+                    listOf(if (legacyFits) legacy else grid)
+                }
+            }
+            return grids to (info + ("name" to (info["title"] ?: info["name"].orEmpty())))
+        }
+
+        private fun detectSqliteGrids(db: SQLiteDatabase, grid: TileGrid): List<TileGrid> {
+            val candidates = mutableListOf(grid, grid.copy(invertedZoom = true))
+            db.rawQuery(
+                "SELECT z, MIN(x), MAX(x), MIN(y), MAX(y), COUNT(*), COUNT(x), COUNT(y) FROM ${grid.source} GROUP BY z",
+                null
+            ).use {
+                require(it.moveToFirst()) { "В карте нет тайлов" }
+                do {
+                    require(!it.isNull(0) && it.getLong(0) in 0..22 &&
+                        it.getLong(5) == it.getLong(6) && it.getLong(5) == it.getLong(7)) {
+                        "Некорректные координаты тайлов SQLiteDB"
+                    }
+                    candidates.removeAll { candidate ->
+                        val z = candidate.zoomNumber(it.getInt(0))
+                        z !in 0..22 || it.getLong(1) < 0 || it.getLong(3) < 0 ||
+                            it.getLong(2) >= (1L shl z) || it.getLong(4) >= (1L shl z)
+                    }
+                } while (candidates.isNotEmpty() && it.moveToNext())
+            }
+            require(candidates.isNotEmpty()) { "Координаты SQLiteDB выходят за границы сетки XYZ и BigPlanet" }
+            return candidates
         }
 
         private fun hasGeoPackage(db: SQLiteDatabase) = db.rawQuery(

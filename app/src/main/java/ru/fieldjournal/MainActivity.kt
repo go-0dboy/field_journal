@@ -6,6 +6,7 @@ import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.ContentResolver
 import android.content.Intent
 import android.net.Uri
 import android.net.http.HttpResponseCache
@@ -22,6 +23,7 @@ import android.view.WindowInsetsController
 import android.view.inputmethod.InputMethodManager
 import android.widget.BaseAdapter
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.ListView
 import android.view.ViewGroup
 import android.widget.LinearLayout
@@ -38,6 +40,31 @@ class MainActivity : Activity() {
         MAP("Карта", NavIcon.MAP), SITES("Объекты", NavIcon.PIN), NOTES("Дневник", NavIcon.NOTE), SETTINGS("Данные", NavIcon.DATA)
     }
     private enum class DrawMode { NONE, POINT, AREA, MOVE_POINT, MOVE_AREA }
+
+    private class IoTask(val title: String) {
+        var onReady: (() -> Unit)? = null
+        var deliver: ((MainActivity) -> Unit)? = null
+        private var discard: (() -> Unit)? = null
+        private var abandoned = false
+
+        fun complete(deliver: (MainActivity) -> Unit, discard: () -> Unit) {
+            if (abandoned) {
+                discard()
+            } else {
+                this.deliver = deliver
+                this.discard = discard
+                onReady?.invoke()
+            }
+        }
+
+        fun abandon() {
+            abandoned = true
+            discard?.invoke()
+        }
+    }
+
+    private data class AttachmentTarget(val draftToken: String, val owner: String, val note: Boolean)
+    private data class RetainedState(val draft: EditorDraft?, val task: IoTask?, val raster: PreparedRaster?)
 
     internal lateinit var store: JournalStore
         private set
@@ -85,6 +112,11 @@ class MainActivity : Activity() {
     private var pendingIsNote = false
     private var pendingCamera: String? = null
     private var pendingMap: MapLayer? = null
+    private var foreground = false
+    private var ioTask: IoTask? = null
+    private var progressDialog: AlertDialog? = null
+    private var preparedRaster: PreparedRaster? = null
+    private var rasterDialog: AlertDialog? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -179,15 +211,20 @@ class MainActivity : Activity() {
         }
         root.requestApplyInsets()
         createMap()
-        (lastNonConfigurationInstance as? EditorDraft)?.let { draft ->
-            if (editorId == draft.id) draftToOpen = draft
-            else if (drawMode == DrawMode.MOVE_POINT || drawMode == DrawMode.MOVE_AREA) geometryDraft = draft
+        (lastNonConfigurationInstance as? RetainedState)?.let { retained ->
+            ioTask = retained.task
+            preparedRaster = retained.raster
+            retained.draft?.let { draft ->
+                if (editorId == draft.id) draftToOpen = draft
+                else if (drawMode == DrawMode.MOVE_POINT || drawMode == DrawMode.MOVE_AREA) geometryDraft = draft
+            }
         }
         render()
     }
 
     @Deprecated("Retains unsaved editor input across configuration changes")
-    override fun onRetainNonConfigurationInstance(): Any? = editView?.snapshot() ?: geometryDraft
+    override fun onRetainNonConfigurationInstance(): Any =
+        RetainedState(editView?.snapshot() ?: geometryDraft, ioTask, preparedRaster)
 
     override fun onSaveInstanceState(out: Bundle) {
         persistDraftForRestoration(out)
@@ -216,6 +253,7 @@ class MainActivity : Activity() {
     }
 
     private fun persistDraftForRestoration(out: Bundle) {
+        out.putString("draftToken", draftToken)
         val draft = editView?.takeIf(JournalEditor::hasUnsavedChanges)?.snapshot() ?: geometryDraft
         if (draft == null) return
         runCatching {
@@ -224,12 +262,28 @@ class MainActivity : Activity() {
             try {
                 output.write(draft.json().toString().toByteArray(Charsets.UTF_8))
                 file.finishWrite(output)
-                out.putString("draftToken", draftToken)
             } catch (error: Exception) {
                 file.failWrite(output)
                 throw error
             }
         }.onFailure { android.util.Log.w("FieldJournal", "Could not keep editor draft for recreation", it) }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        foreground = true
+        connectIo()
+        showRasterChoice()
+    }
+
+    override fun onStop() {
+        foreground = false
+        ioTask?.onReady = null
+        progressDialog?.dismiss()
+        progressDialog = null
+        rasterDialog?.dismiss()
+        rasterDialog = null
+        super.onStop()
     }
 
     override fun onResume() {
@@ -243,6 +297,10 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        if (!isChangingConfigurations) {
+            ioTask?.abandon()
+            preparedRaster?.close()
+        }
         handler.removeCallbacksAndMessages(null)
         map.release()
         super.onDestroy()
@@ -774,19 +832,30 @@ class MainActivity : Activity() {
             }
             if (tiles.layer == MapLayer.HYBRID || tiles.historicalEnabled) {
                 group.addSpace(8)
+                val source = tiles.referenceSource()
                 group.addView(layerSwitch("Современные дороги и подписи", tiles.referencesEnabled,
-                    enabled = !tiles.offline || references != null) {
+                    enabled = source == ReferenceSource.ESRI || references != null) {
                     tiles.referencesEnabled = it
                     map.refresh()
                 }, -1, -2)
-                if (tiles.offline) {
-                    group.addView(label(references?.name ?: "Для офлайна нужен файл с прозрачными тайлами", 13f, Palette.muted))
-                    group.addSpace(6)
-                    group.addView(action(if (references == null) "Подключить подписи" else "Заменить подписи") {
-                        dialog.dismiss()
-                        pickDocument(REFERENCES, "*/*")
+                if (!tiles.offline) {
+                    group.addView(action("Подписи · ${source.title}") {
+                        AlertDialog.Builder(this)
+                            .setTitle("Источник подписей")
+                            .setSingleChoiceItems(ReferenceSource.entries.map(ReferenceSource::title).toTypedArray(), source.ordinal) { picker, index ->
+                                tiles.onlineReferenceSource = ReferenceSource.entries[index]
+                                map.refresh()
+                                picker.dismiss()
+                                redrawControls()
+                            }.setPositiveButton("Отмена", null).show()
                     }, -1, -2)
                 }
+                group.addView(label(references?.name ?: "Подключите прозрачный пакет для локальных подписей", 13f, Palette.muted))
+                group.addSpace(6)
+                group.addView(action(if (references == null) "Подключить подписи" else "Заменить подписи") {
+                    dialog.dismiss()
+                    pickDocument(REFERENCES, "*/*")
+                }, -1, -2)
             }
             controls.addSpace(10)
             controls.addView(layerSwitch("Офлайн-режим", tiles.offline) {
@@ -919,12 +988,36 @@ class MainActivity : Activity() {
     }
 
     private fun showNotes() {
-        val list = listBody()
-        val sites = store.sites().associateBy(Site::id)
-        val notes = store.notes().sortedByDescending(Note::created)
-        if (notes.isEmpty()) empty(list, "Дневник пока пуст", "Создайте запись о выезде, наблюдении или работе с источниками.")
-        for (note in notes) {
-            card(list, note.title, listOfNotNull(dateLabel(note.created), sites[note.siteId]?.title).joinToString(" · ")) { openNote(note.id) }
+        val loading = vertical().apply { setPadding(dp(14), dp(5), dp(14), dp(8)) }
+        val status = label("Загрузка записей…", 14f, Palette.muted)
+        loading.addView(status)
+        content.addView(loading, -1, -1)
+        val journal = store
+        diaryReads.execute {
+            val rows = runCatching { journal.noteSummaries() }
+            handler.post {
+                if (isDestroyed || loading.parent !== content) return@post
+                rows.onSuccess { notes ->
+                    loading.removeAllViews()
+                    if (notes.isEmpty()) {
+                        empty(loading, "Дневник пока пуст", "Создайте запись о выезде, наблюдении или работе с источниками.")
+                    } else {
+                        val results = ListView(this).apply {
+                            divider = android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT)
+                            dividerHeight = dp(8)
+                            adapter = object : BaseAdapter() {
+                                override fun getCount() = notes.size
+                                override fun getItem(position: Int) = notes[position]
+                                override fun getItemId(position: Int) = position.toLong()
+                                override fun getView(position: Int, convertView: View?, parent: ViewGroup): View =
+                                    ((convertView as? DiaryRow) ?: DiaryRow(this@MainActivity)).apply { bind(getItem(position)) }
+                            }
+                            setOnItemClickListener { _, _, position, _ -> openNote(notes[position].id) }
+                        }
+                        loading.addView(results, -1, -1)
+                    }
+                }.onFailure { status.text = "Не удалось загрузить дневник" }
+            }
         }
     }
 
@@ -988,7 +1081,7 @@ class MainActivity : Activity() {
         }
         for ((slot, title, request) in listOf(
             Triple(MapPackage.HISTORICAL, "Историческая карта", HISTORICAL),
-            Triple(MapPackage.REFERENCES, "Офлайн · дороги и подписи", REFERENCES)
+            Triple(MapPackage.REFERENCES, "Локальные дороги и подписи", REFERENCES)
         )) {
             val archive = tiles.info(slot)
             card(list, title, archive?.let { "${it.name} · ${it.format.title}" } ?: "MBTiles, SQLiteDB или GeoPackage") {
@@ -1215,59 +1308,56 @@ class MainActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         val uri = data?.data
+        val resolver = applicationContext.contentResolver
+        val journal = store
         when (requestCode) {
             CAMERA -> handleCamera(resultCode)
             ATTACH -> {
                 val owner = pendingOwner
-                val note = pendingIsNote
                 pendingOwner = null
                 if (resultCode != RESULT_OK || uri == null || owner == null) return
+                val target = AttachmentTarget(draftToken, owner, pendingIsNote)
                 withIo("Копирование вложения", abandoned = { record: Attachment ->
-                    store.attachmentFile(record.id).delete()
+                    journal.attachmentFile(record.id).delete()
                 }, work = {
-                    requireNotNull(contentResolver.openInputStream(uri)).use {
-                        store.addAttachment(it, documentName(uri), contentResolver.getType(uri) ?: "application/octet-stream")
+                    requireNotNull(resolver.openInputStream(uri)).use {
+                        journal.addAttachment(it, documentName(resolver, uri), resolver.getType(uri) ?: "application/octet-stream")
                     }
                 }) { record ->
-                    stageMedia(owner, note, record)
+                    if (target.draftToken == draftToken) stageMedia(target.owner, target.note, record)
+                    else store.attachmentFile(record.id).delete()
                 }
             }
-            RASTER_MAP -> {
-                val layer = pendingMap
+            RASTER_MAP, HISTORICAL, REFERENCES -> {
+                val slot = when (requestCode) {
+                    HISTORICAL -> MapPackage.HISTORICAL
+                    REFERENCES -> MapPackage.REFERENCES
+                    else -> pendingMap?.archive
+                }
                 pendingMap = null
-                if (resultCode != RESULT_OK || uri == null || layer == null) return
-                withIo("Установка офлайн-карты", {
-                    installRaster(layer.archive, uri)
+                if (resultCode != RESULT_OK || uri == null || slot == null) return
+                val mapTiles = tiles
+                withIo("Чтение файла карты", abandoned = PreparedRaster::close, work = {
+                    val name = runCatching { documentName(resolver, uri) }.getOrDefault("")
+                    requireNotNull(resolver.openInputStream(uri)) { "Не удалось открыть файл карты" }.use {
+                        mapTiles.prepare(slot, it, name)
+                    }
                 }) {
-                    activateMap(layer, it)
-                    message("Офлайн-карта установлена")
-                }
-            }
-            HISTORICAL, REFERENCES -> {
-                if (resultCode != RESULT_OK || uri == null) return
-                val historic = requestCode == HISTORICAL
-                val slot = if (historic) MapPackage.HISTORICAL else MapPackage.REFERENCES
-                withIo(if (historic) "Установка исторической карты" else "Установка слоя подписей", {
-                    installRaster(slot, uri)
-                }) { info ->
-                    if (historic) tiles.historicalEnabled = true else tiles.referencesEnabled = true
-                    map.refresh()
-                    if (historic) {
-                        tab = Tab.MAP
-                        render()
-                        moveToPackage(info)
-                    } else if (tab == Tab.SETTINGS) render()
-                    message(if (historic) "Историческая карта подключена" else "Офлайн-подписи подключены")
+                    if (it.options.size == 1) finishRasterImport(it)
+                    else {
+                        preparedRaster = it
+                        showRasterChoice()
+                    }
                 }
             }
             IMPORT -> {
                 if (resultCode != RESULT_OK || uri == null) return
                 withIo("Импорт данных", {
-                    requireNotNull(contentResolver.openInputStream(uri)).buffered().use { input ->
+                    requireNotNull(resolver.openInputStream(uri)).buffered().use { input ->
                         input.mark(4)
                         val zip = input.read() == 'P'.code && input.read() == 'K'.code
                         input.reset()
-                        if (zip) store.importBackup(input) else store.importGeoJson(input)
+                        if (zip) journal.importBackup(input) else journal.importGeoJson(input)
                     }
                 }) { result ->
                     render()
@@ -1279,9 +1369,9 @@ class MainActivity : Activity() {
             BACKUP, GEOJSON -> {
                 if (resultCode != RESULT_OK || uri == null) return
                 withIo("Экспорт данных", {
-                    val openOutput = { requireNotNull(contentResolver.openOutputStream(uri, "wt")) }
-                    if (requestCode == BACKUP) store.exportBackup(openOutput)
-                    else openOutput().use(store::exportGeoJson)
+                    val openOutput = { requireNotNull(resolver.openOutputStream(uri, "wt")) }
+                    if (requestCode == BACKUP) journal.exportBackup(openOutput)
+                    else journal.exportGeoJson(openOutput)
                 }) { message("Файл сохранён") }
             }
         }
@@ -1303,15 +1393,70 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun installRaster(slot: MapPackage, uri: Uri): OfflineInfo {
-        val name = runCatching { documentName(uri) }.getOrDefault("")
-        return requireNotNull(contentResolver.openInputStream(uri)) { "Не удалось открыть файл карты" }.use {
-            tiles.install(slot, it, name)
+    private fun showRasterChoice() {
+        val prepared = preparedRaster ?: return
+        if (!foreground || rasterDialog != null) return
+        val dialog = AlertDialog.Builder(this).create()
+        val body = vertical().apply {
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+            addView(label("Схема SQLiteDB", 20f, Palette.pine, true))
+            addSpace(6)
+            addView(label("В файле схема не указана. Выберите вариант, где координаты соответствуют нужному участку.", 14f, Palette.muted))
+            prepared.preview?.let { bitmap ->
+                addView(ImageView(this@MainActivity).apply {
+                    setImageBitmap(bitmap)
+                    contentDescription = "Образец тайла"
+                }, -1, dp(110))
+            }
+            for (option in prepared.options) {
+                card(this, requireNotNull(option.numbering).title,
+                    "${option.center?.display().orEmpty()} · масштаб ${option.minZoom}–${option.maxZoom}") {
+                    preparedRaster = null
+                    rasterDialog = null
+                    dialog.dismiss()
+                    finishRasterImport(prepared, option.numbering)
+                }
+            }
+            addView(horizontal().apply {
+                gravity = Gravity.END
+                addView(action("Отмена") { dialog.cancel() })
+            }, -1, -2)
         }
+        dialog.setView(ScrollView(this).apply { addView(body) }, 0, 0, 0, 0)
+        dialog.setOnCancelListener {
+            prepared.close()
+            preparedRaster = null
+            rasterDialog = null
+        }
+        rasterDialog = dialog
+        dialog.showFieldSheet()
     }
 
-    private fun documentName(uri: Uri) = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
-        ?.use { if (it.moveToFirst()) it.getString(0) else null }.orEmpty()
+    private fun finishRasterImport(prepared: PreparedRaster, numbering: SqliteNumbering? = null) {
+        runCatching { tiles.install(prepared, numbering) }.onSuccess { info ->
+            when (prepared.slot) {
+                MapPackage.HISTORICAL -> {
+                    tiles.historicalEnabled = true
+                    map.refresh()
+                    tab = Tab.MAP
+                    render()
+                    moveToPackage(info)
+                    message("Историческая карта подключена")
+                }
+                MapPackage.REFERENCES -> {
+                    tiles.referencesEnabled = true
+                    if (!tiles.offline) tiles.onlineReferenceSource = ReferenceSource.LOCAL
+                    map.refresh()
+                    if (tab == Tab.SETTINGS) render()
+                    message("Слой подписей подключён")
+                }
+                else -> {
+                    activateMap(MapLayer.entries.first { it.archive == prepared.slot }, info)
+                    message("Офлайн-карта установлена")
+                }
+            }
+        }.onFailure(::showIoError)
+    }
 
     private fun stageMedia(id: String, note: Boolean, record: Attachment) {
         val editor = editView
@@ -1323,23 +1468,44 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun <T> withIo(title: String, work: () -> T, abandoned: (T) -> Unit = {}, success: (T) -> Unit) {
-        val dialog = AlertDialog.Builder(this).setTitle(title).setMessage("Подождите…").setCancelable(false).show()
+    private fun <T> withIo(
+        title: String, work: () -> T, abandoned: (T) -> Unit = {}, success: MainActivity.(T) -> Unit
+    ) {
+        val task = IoTask(title)
+        ioTask = task
         io.execute {
             val result = runCatching(work)
             Handler(Looper.getMainLooper()).post {
-                if (isDestroyed || isFinishing) {
-                    result.onSuccess(abandoned)
-                    return@post
-                }
-                dialog.dismiss()
-                result.onSuccess(success).onFailure { error ->
-                    AlertDialog.Builder(this).setTitle("Операция не завершена")
-                        .setMessage(error.message ?: "Не удалось прочитать или сохранить данные")
-                        .setPositiveButton("Закрыть", null).show()
-                }
+                task.complete(
+                    deliver = { activity -> result.fold({ activity.success(it) }, activity::showIoError) },
+                    discard = { result.onSuccess(abandoned) }
+                )
             }
         }
+        connectIo()
+    }
+
+    private fun connectIo() {
+        val task = ioTask ?: return
+        if (!foreground) return
+        val deliver = task.deliver
+        if (deliver == null) {
+            task.onReady = ::connectIo
+            if (progressDialog == null) progressDialog = AlertDialog.Builder(this)
+                .setTitle(task.title).setMessage("Подождите…").setCancelable(false).show()
+        } else {
+            task.onReady = null
+            ioTask = null
+            progressDialog?.dismiss()
+            progressDialog = null
+            deliver(this)
+        }
+    }
+
+    private fun showIoError(error: Throwable) {
+        AlertDialog.Builder(this).setTitle("Операция не завершена")
+            .setMessage(error.message ?: "Не удалось прочитать или сохранить данные")
+            .setPositiveButton("Закрыть", null).show()
     }
 
     internal fun confirm(title: String, text: String, yes: () -> Unit) {
@@ -1392,5 +1558,10 @@ class MainActivity : Activity() {
         private const val HISTORICAL = 17
         private const val REFERENCES = 18
         private val io = Executors.newSingleThreadExecutor()
+        private val diaryReads = Executors.newSingleThreadExecutor()
+
+        private fun documentName(resolver: ContentResolver, uri: Uri) =
+            resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                ?.use { if (it.moveToFirst()) it.getString(0) else null }.orEmpty()
     }
 }

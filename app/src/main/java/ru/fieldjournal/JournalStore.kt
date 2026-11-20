@@ -17,31 +17,82 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
 
-internal class JournalStore(context: Context, private val backupLimit: Long = MAX_ARCHIVE) : SQLiteOpenHelper(context, "field-journal.db", null, 1) {
+internal class JournalStore(
+    context: Context, private val backupLimit: Long = MAX_ARCHIVE, private val geoJsonLimit: Long = MAX_JSON
+) : SQLiteOpenHelper(context, "field-journal.db", null, 2) {
     private val cache = context.cacheDir
     val attachments = File(context.filesDir, "attachments").apply { mkdirs() }
     private val snapshot = AtomicFile(File(context.filesDir, "journal-autosave.json"))
     private var snapshotTask: ScheduledFuture<*>? = null
 
     override fun onCreate(db: SQLiteDatabase) {
-        db.execSQL("CREATE TABLE sites (id TEXT PRIMARY KEY, updated INTEGER NOT NULL, payload TEXT NOT NULL)")
-        db.execSQL("CREATE TABLE notes (id TEXT PRIMARY KEY, updated INTEGER NOT NULL, payload TEXT NOT NULL)")
+        db.execSQL("CREATE TABLE sites (id TEXT PRIMARY KEY, updated INTEGER NOT NULL, payload TEXT NOT NULL, title TEXT)")
+        db.execSQL("CREATE TABLE notes (id TEXT PRIMARY KEY, updated INTEGER NOT NULL, payload TEXT NOT NULL, " +
+            "title TEXT, created INTEGER, site_id TEXT)")
+        createNoteIndexes(db)
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) {
+            db.execSQL("ALTER TABLE sites ADD COLUMN title TEXT")
+            db.execSQL("ALTER TABLE notes ADD COLUMN title TEXT")
+            db.execSQL("ALTER TABLE notes ADD COLUMN created INTEGER")
+            db.execSQL("ALTER TABLE notes ADD COLUMN site_id TEXT")
+            for (table in listOf("sites", "notes")) {
+                db.query(table, arrayOf("id", "payload"), null, null, null, null, "rowid").use { cursor ->
+                    while (cursor.moveToNext()) {
+                        val json = JSONObject(cursor.getString(1))
+                        val values = summaryValues(table, json)
+                        db.update(table, values, "id = ?", arrayOf(cursor.getString(0)))
+                    }
+                }
+            }
+            createNoteIndexes(db)
+        }
+    }
 
-    private fun rows(table: String) =
+    private fun createNoteIndexes(db: SQLiteDatabase) {
+        db.execSQL("CREATE INDEX notes_created ON notes(created DESC)")
+        db.execSQL("CREATE INDEX notes_site_created ON notes(site_id, created DESC)")
+    }
+
+    private fun <T> readRows(table: String, read: (JSONObject) -> T): List<T> =
         readableDatabase.query(table, arrayOf("payload"), null, null, null, null, "updated DESC").use { cursor ->
             buildList {
-                while (cursor.moveToNext()) add(JSONObject(cursor.getString(0)))
+                while (cursor.moveToNext()) add(read(JSONObject(cursor.getString(0))))
             }
         }
 
-    fun sites() = rows("sites").map { Site.read(it, withAttachments = true, validate = false) }
-    fun notes() = rows("notes").map(Note::read)
+    fun sites() = readRows("sites") { Site.read(it, withAttachments = true, validate = false) }
+    fun notes() = readRows("notes", Note::read)
+
+    fun noteSummaries(siteId: String? = null): List<NoteSummary> {
+        val sql = "SELECT notes.id, notes.title, notes.created, sites.title FROM notes " +
+            "LEFT JOIN sites ON notes.site_id = sites.id " +
+            (if (siteId == null) "" else "WHERE notes.site_id = ? ") +
+            "ORDER BY notes.created DESC"
+        return readableDatabase.rawQuery(sql, siteId?.let { arrayOf(it) }).use { cursor ->
+            buildList {
+                while (cursor.moveToNext()) {
+                    add(NoteSummary(cursor.getString(0), cursor.getString(1), cursor.getLong(2), cursor.getString(3)))
+                }
+            }
+        }
+    }
+
+    private fun summaryValues(table: String, json: JSONObject) = ContentValues().apply {
+        if (table == "sites") {
+            val properties = json.getJSONObject("properties")
+            put("title", properties.getString("title"))
+        } else {
+            put("title", json.getString("title"))
+            put("created", json.getLong("created"))
+            put("site_id", if (json.isNull("site_id")) null else json.getString("site_id"))
+        }
+    }
 
     private fun write(db: SQLiteDatabase, table: String, id: String, updated: Long, json: JSONObject, policy: Int) =
-        db.insertWithOnConflict(table, null, ContentValues().apply {
+        db.insertWithOnConflict(table, null, summaryValues(table, json).apply {
             put("id", id)
             put("updated", updated)
             put("payload", json.toString())
@@ -119,15 +170,13 @@ internal class JournalStore(context: Context, private val backupLimit: Long = MA
         return record
     }
 
-    private fun collection(sites: List<Site>, includeAttachments: Boolean): JSONObject = JSONObject()
+    private fun collection(sites: List<Site>): JSONObject = JSONObject()
         .put("type", "FeatureCollection")
-        .put("features", JSONArray(sites.map {
-            if (includeAttachments) it.feature() else it.copy(attachments = emptyList()).feature(normalizeWinding = true)
-        }))
+        .put("features", JSONArray(sites.map { it.feature() }))
 
     private fun manifest(sites: List<Site>, notes: List<Note>) = JSONObject()
         .put("format", "field-journal").put("version", 1)
-        .put("sites", collection(sites, true)).put("notes", JSONArray(notes.map(Note::json)))
+        .put("sites", collection(sites)).put("notes", JSONArray(notes.map(Note::json)))
 
     private fun scheduleSnapshot() {
         snapshotTask?.cancel(false)
@@ -149,8 +198,38 @@ internal class JournalStore(context: Context, private val backupLimit: Long = MA
         }.onFailure { android.util.Log.w("FieldJournal", "Could not refresh journal snapshot", it) }
     }
 
-    fun exportGeoJson(out: OutputStream) {
-        out.write(collection(sites(), false).toString(2).toByteArray(Charsets.UTF_8))
+    fun exportGeoJson(out: OutputStream) = exportGeoJson { out }
+
+    fun exportGeoJson(openOutput: () -> OutputStream) {
+        val file = File.createTempFile("journal-", ".geojson", cache)
+        try {
+            file.outputStream().buffered().use { out ->
+                var remaining = geoJsonLimit
+                fun writePart(part: String) {
+                    val bytes = part.toByteArray(Charsets.UTF_8)
+                    remaining -= bytes.size
+                    require(remaining >= 0) { "Каталог превышает допустимый размер GeoJSON. Используйте меньший набор объектов" }
+                    out.write(bytes)
+                }
+                writePart("{\"type\":\"FeatureCollection\",\"features\":[")
+                readableDatabase.query("sites", arrayOf("payload"), null, null, null, null, "updated DESC").use { cursor ->
+                    while (cursor.moveToNext()) {
+                        val site = Site.read(JSONObject(cursor.getString(0)), withAttachments = false, validate = false)
+                        if (site.area) {
+                            holeError(listOf(site.vertices) + site.holes)?.let { error ->
+                                throw IllegalArgumentException("«${site.title}». $error")
+                            }
+                        }
+                        if (cursor.position > 0) writePart(",")
+                        writePart(site.feature(normalizeWinding = true).toString())
+                    }
+                }
+                writePart("]}")
+            }
+            openOutput().use { out -> file.inputStream().use { it.copyTo(out) } }
+        } finally {
+            file.delete()
+        }
     }
 
     fun exportBackup(out: OutputStream) = exportBackup { out }
@@ -189,9 +268,23 @@ internal class JournalStore(context: Context, private val backupLimit: Long = MA
         require(archive.length() <= backupLimit) { "ZIP превышает допустимый объём восстановления" }
     }
 
-    fun importGeoJson(input: InputStream): ImportResult {
-        val json = input.readJson()
-        return importRecords(readFeatures(json, false), emptyList())
+    @Synchronized fun importGeoJson(input: InputStream): ImportResult {
+        val db = writableDatabase
+        var added = 0
+        var skipped = 0
+        db.beginTransaction()
+        try {
+            readGeoJson(input, geoJsonLimit) { feature ->
+                val site = Site.read(feature, withAttachments = false)
+                if (write(db, "sites", site.id, site.updated, site.feature(), SQLiteDatabase.CONFLICT_IGNORE) != -1L) added++
+                else skipped++
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        if (added > 0) scheduleSnapshot()
+        return ImportResult(added, 0, skipped)
     }
 
     @Synchronized fun importBackup(input: InputStream): ImportResult {
@@ -206,7 +299,7 @@ internal class JournalStore(context: Context, private val backupLimit: Long = MA
                 require(json.optString("format") == "field-journal" && json.optInt("version") == 1) {
                     "Неподдерживаемый формат резервной копии"
                 }
-                val sites = readFeatures(json.getJSONObject("sites"), true)
+                val sites = readBackupSites(json.getJSONObject("sites"))
                 val notes = json.getJSONArray("notes").objects().map(Note::read)
                 val files = attachmentRecords(sites, notes)
                 var remaining = backupLimit
@@ -260,13 +353,14 @@ internal class JournalStore(context: Context, private val backupLimit: Long = MA
         return ImportResult(addedSites, addedNotes, sites.size + notes.size - addedSites - addedNotes)
     }
 
-    private fun readFeatures(json: JSONObject, withAttachments: Boolean): List<Site> {
+    private fun readBackupSites(json: JSONObject): List<Site> {
         val features = when (json.getString("type")) {
             "FeatureCollection" -> json.getJSONArray("features").objects()
             "Feature" -> listOf(json)
             else -> error("Нужен GeoJSON Feature или FeatureCollection в WGS 84")
         }
-        return features.map { Site.read(it, withAttachments) }
+        // Version 1 backups can contain internal contours accepted by older releases.
+        return features.map { Site.read(it, withAttachments = true, validateTopology = false) }
     }
 
     private fun InputStream.readJson(): JSONObject {
@@ -303,6 +397,8 @@ internal class JournalStore(context: Context, private val backupLimit: Long = MA
             instance ?: JournalStore(context.applicationContext).also { instance = it }
     }
 }
+
+internal data class NoteSummary(val id: String, val title: String, val created: Long, val siteTitle: String?)
 
 internal data class ImportResult(val sites: Int, val notes: Int, val skipped: Int)
 

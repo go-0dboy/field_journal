@@ -12,17 +12,19 @@ import android.widget.LinearLayout
 import android.widget.TextView
 
 internal object Palette {
-    val paper = 0xfff3f6f8.toInt()
-    val white = 0xfffcfeff.toInt()
-    val pine = 0xff173c47.toInt()
-    val green = 0xff196475.toInt()
-    val pale = 0xffe1eff2.toInt()
-    val ink = 0xff1c2c35.toInt()
-    val muted = 0xff526773.toInt()
-    val border = 0xffd6e2e8.toInt()
-    val floatingSurface = 0xdcfcfeff.toInt()
-    val floatingAccent = 0xe6196475.toInt()
-    val rust = 0xff96462c.toInt()
+    val paper = 0xfff4f5f2.toInt()
+    val white = 0xffffffff.toInt()
+    val pine = 0xff163c38.toInt()
+    val green = 0xff14665e.toInt()
+    val pale = 0xffe4f0eb.toInt()
+    val control = 0xffeef1ee.toInt()
+    val ink = 0xff202b29.toInt()
+    val muted = 0xff52645f.toInt()
+    val border = 0xffdce3de.toInt()
+    val floatingSurface = 0xf2ffffff.toInt()
+    val floatingAccent = 0xf514665e.toInt()
+    val rust = 0xff9a482f.toInt()
+    val ripple = ColorStateList.valueOf(0x2514665e)
 }
 
 internal fun Context.dp(value: Number) = (value.toFloat() * resources.displayMetrics.density + 0.5f).toInt()
@@ -49,8 +51,17 @@ internal fun Context.action(
     gravity = Gravity.CENTER
     minimumHeight = dp(48)
     setPadding(dp(12), 0, dp(12), 0)
-    background = RippleDrawable(ColorStateList.valueOf(0x25306679),
-        panel(if (primary) Palette.green else Palette.white, 16, if (primary) 0 else Palette.border), null)
+    setTextColor(ColorStateList(
+        arrayOf(intArrayOf(-android.R.attr.state_enabled), intArrayOf()),
+        intArrayOf(Palette.muted, if (primary) Color.WHITE else Palette.pine)
+    ))
+    val fill = panel(if (primary) Palette.green else Palette.control, 15).apply {
+        setColor(ColorStateList(
+            arrayOf(intArrayOf(-android.R.attr.state_enabled), intArrayOf()),
+            intArrayOf(Palette.control, if (primary) Palette.green else Palette.control)
+        ))
+    }
+    background = RippleDrawable(Palette.ripple, fill, null)
     if (description != null) contentDescription = description
     isFocusable = true
     accessibilityDelegate = object : View.AccessibilityDelegate() {
@@ -63,7 +74,10 @@ internal fun Context.action(
 }
 
 internal fun Context.edit(hint: String, value: String, lines: Int = 1) = EditText(this).apply {
-    background = panel(Palette.white, 15, Palette.border)
+    background = android.graphics.drawable.StateListDrawable().apply {
+        addState(intArrayOf(android.R.attr.state_focused), panel(Palette.white, 14, Palette.green))
+        addState(intArrayOf(), panel(Palette.control, 14))
+    }
     textSize = 16f
     setTextColor(Palette.ink)
     setHintTextColor(Palette.muted)
@@ -195,79 +209,18 @@ internal fun drawSymbol(canvas: Canvas, x: Float, y: Float, radius: Float, type:
     canvas.restore()
 }
 
-internal enum class NavIcon { MAP, PIN, NOTE, DATA, TRIP, DRAFT }
-
-internal fun Context.navigationAction(title: String, icon: NavIcon, selected: Boolean, click: () -> Unit) =
+internal fun Context.navigationAction(title: String, icon: FieldIcon, selected: Boolean, click: () -> Unit) =
     action(title, click = click).apply {
         textSize = 12f
-        minHeight = dp(56)
+        minHeight = dp(54)
         setPadding(dp(2), dp(5), dp(2), dp(5))
         isSelected = selected
-        val ink = if (selected) Palette.pine else Palette.muted
+        val ink = if (selected) Palette.green else Palette.muted
         setTextColor(ink)
-        background = RippleDrawable(ColorStateList.valueOf(0x25306679),
-            panel(if (selected) Palette.pale else Color.TRANSPARENT, 14), null)
-        val glyph = object : android.graphics.drawable.Drawable() {
-            private val pen = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = ink
-                style = Paint.Style.STROKE
-                strokeCap = Paint.Cap.ROUND
-                strokeJoin = Paint.Join.ROUND
-                strokeWidth = 1.8f
-            }
-
-            override fun draw(canvas: Canvas) {
-                canvas.save()
-                canvas.translate(bounds.left.toFloat(), bounds.top.toFloat())
-                canvas.scale(bounds.width() / 24f, bounds.height() / 24f)
-                fun path(points: Path.() -> Unit) = canvas.drawPath(Path().apply(points), pen)
-                when (icon) {
-                    NavIcon.MAP -> path {
-                        moveTo(3f, 6f); lineTo(9f, 3f); lineTo(15f, 6f); lineTo(21f, 3f)
-                        lineTo(21f, 18f); lineTo(15f, 21f); lineTo(9f, 18f); lineTo(3f, 21f); close()
-                        moveTo(9f, 3f); lineTo(9f, 18f)
-                        moveTo(15f, 6f); lineTo(15f, 21f)
-                    }
-                    NavIcon.PIN -> {
-                        path {
-                            moveTo(12f, 22f)
-                            cubicTo(10f, 19f, 5f, 15f, 5f, 10f)
-                            cubicTo(5f, 1f, 19f, 1f, 19f, 10f)
-                            cubicTo(19f, 15f, 14f, 19f, 12f, 22f)
-                        }
-                        canvas.drawCircle(12f, 10f, 2.5f, pen)
-                    }
-                    NavIcon.NOTE -> {
-                        canvas.drawRoundRect(5f, 3f, 20f, 21f, 2f, 2f, pen)
-                        canvas.drawLine(9f, 3f, 9f, 21f, pen)
-                        canvas.drawLine(12f, 9f, 17f, 9f, pen)
-                        canvas.drawLine(12f, 13f, 17f, 13f, pen)
-                    }
-                    NavIcon.TRIP -> {
-                        canvas.drawRoundRect(4f, 8f, 20f, 21f, 3f, 3f, pen)
-                        canvas.drawRoundRect(8f, 4f, 16f, 8f, 1f, 1f, pen)
-                        canvas.drawLine(4f, 14f, 20f, 14f, pen)
-                    }
-                    NavIcon.DRAFT -> path {
-                        moveTo(5f, 3f); lineTo(15f, 3f); lineTo(19f, 7f); lineTo(19f, 21f); lineTo(5f, 21f); close()
-                        moveTo(8f, 11f); lineTo(15f, 11f)
-                        moveTo(8f, 15f); lineTo(13f, 15f)
-                    }
-                    NavIcon.DATA -> {
-                        canvas.drawRoundRect(3f, 5f, 21f, 20f, 2f, 2f, pen)
-                        canvas.drawLine(3f, 10f, 21f, 10f, pen)
-                        canvas.drawLine(10f, 14f, 14f, 14f, pen)
-                    }
-                }
-                canvas.restore()
-            }
-
-            override fun setAlpha(alpha: Int) { pen.alpha = alpha }
-            override fun setColorFilter(colorFilter: ColorFilter?) { pen.colorFilter = colorFilter }
-            @Deprecated("Drawable opacity is no longer used")
-            override fun getOpacity() = PixelFormat.TRANSLUCENT
-        }
-        glyph.setBounds(0, 0, dp(23), dp(23))
+        background = RippleDrawable(Palette.ripple,
+            panel(if (selected) Palette.pale else Color.TRANSPARENT, 14), panel(Color.WHITE, 14))
+        val glyph = FieldIconDrawable(dp(22), icon, ink, adding = false)
+        glyph.setBounds(0, 0, dp(22), dp(22))
         compoundDrawablePadding = dp(3)
         setCompoundDrawables(null, glyph, null, null)
     }
@@ -310,40 +263,72 @@ internal class CatalogRow(context: Context) : LinearLayout(context) {
     }
 }
 
-internal enum class MapIcon(val description: String) {
-    POINT("Добавить точку"),
-    AREA("Добавить область"),
+internal enum class FieldIcon(val description: String, val addsItem: Boolean = false) {
+    MAP("Карта"),
+    POINT("Добавить точку", true),
+    AREA("Добавить область", true),
     COORDINATES("Координаты"),
-    GPS_POINT("Отметить здесь по GPS"),
+    GPS_POINT("Отметить здесь по GPS", true),
     LAYERS("Слои"),
     SET_POINT("Установить точку"),
     DONE_AREA("Готово"),
     CANCEL("Отмена"),
-    ADD_VERTEX("Добавить вершину в центр карты"),
+    CLOSE("Закрыть"),
+    BACK("Назад"),
+    ADD_VERTEX("Добавить вершину в центр карты", true),
     UNDO_VERTEX("Удалить последнюю вершину"),
     ZOOM_IN("Приблизить"),
     ZOOM_OUT("Отдалить"),
-    LOCATION("Моё место")
+    LOCATION("Моё место"),
+    PARENT_AREA("Родительская область"),
+    CAMERA("Снять фото", true),
+    IMAGE("Добавить фото", true),
+    DOCUMENT("Добавить документ", true),
+    NOTE("Запись"),
+    TRIP("Выезд"),
+    DRAFT("Черновики"),
+    DATA("Данные")
 }
 
-internal fun Context.mapAction(icon: MapIcon, primary: Boolean = false, click: () -> Unit) =
-    android.widget.ImageButton(this).apply {
-        contentDescription = icon.description
-        tooltipText = icon.description
-        minimumWidth = dp(48)
-        minimumHeight = dp(48)
-        background = RippleDrawable(ColorStateList.valueOf(0x25306679),
-            panel(if (primary) Palette.floatingAccent else Palette.floatingSurface, 17,
-                if (primary) 0 else Palette.border), null)
+internal fun Context.iconAction(
+    icon: FieldIcon, description: String = icon.description, primary: Boolean = false, click: () -> Unit
+) = android.widget.ImageButton(this).apply {
+    contentDescription = description
+    tooltipText = description
+    minimumWidth = dp(48)
+    minimumHeight = dp(48)
+    background = RippleDrawable(Palette.ripple,
+        panel(if (primary) Palette.green else Palette.control, 15), null)
+    scaleType = android.widget.ImageView.ScaleType.CENTER
+    setPadding(0, 0, 0, 0)
+    setOnClickListener { click() }
+    isFocusable = true
+    setImageDrawable(FieldIconDrawable(dp(24), icon, if (primary) Color.WHITE else Palette.pine))
+}
+
+internal fun Context.mapAction(icon: FieldIcon, primary: Boolean = false, click: () -> Unit) =
+    iconAction(icon, primary = primary, click = click).apply {
+        background = RippleDrawable(Palette.ripple,
+            panel(if (primary) Palette.floatingAccent else Palette.floatingSurface,
+                if (icon == FieldIcon.LOCATION) 24 else 15, if (primary) 0 else Palette.border), null)
         elevation = dp(3).toFloat()
-        scaleType = android.widget.ImageView.ScaleType.CENTER
-        setPadding(0, 0, 0, 0)
-        setOnClickListener { click() }
-        setImageDrawable(MapIconDrawable(dp(23), icon, if (primary) Color.WHITE else Palette.pine))
     }
 
-private class MapIconDrawable(private val size: Int, private val icon: MapIcon, color: Int) :
-    android.graphics.drawable.Drawable() {
+internal fun Context.addAction(caption: String, icon: FieldIcon, primary: Boolean = true, click: () -> Unit) =
+    action(caption, primary, click = click).apply {
+        gravity = Gravity.CENTER_VERTICAL or Gravity.START
+        setPaddingRelative(dp(14), 0, dp(14), 0)
+        val size = dp(23)
+        val glyph = FieldIconDrawable(size, icon, if (primary) Color.WHITE else Palette.pine, adding = true)
+        glyph.setBounds(0, 0, size, size)
+        compoundDrawablePadding = dp(9)
+        setCompoundDrawablesRelative(glyph, null, null, null)
+    }
+
+private class FieldIconDrawable(
+    private val size: Int, private val icon: FieldIcon, color: Int,
+    private val adding: Boolean = icon.addsItem
+) : android.graphics.drawable.Drawable() {
     private val pen = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         this.color = color
         style = Paint.Style.STROKE
@@ -363,8 +348,111 @@ private class MapIconDrawable(private val size: Int, private val icon: MapIcon, 
         fun line(x1: Float, y1: Float, x2: Float, y2: Float) = canvas.drawLine(x1, y1, x2, y2, pen)
         fun circle(x: Float, y: Float, radius: Float) = canvas.drawCircle(x, y, radius, pen)
 
+        canvas.save()
+        if (adding) {
+            canvas.translate(0f, 4f)
+            canvas.scale(0.8f, 0.8f)
+        }
         when (icon) {
-            MapIcon.POINT -> {
+            FieldIcon.MAP -> path {
+                moveTo(3f, 6f)
+                lineTo(9f, 3f)
+                lineTo(15f, 6f)
+                lineTo(21f, 3f)
+                lineTo(21f, 18f)
+                lineTo(15f, 21f)
+                lineTo(9f, 18f)
+                lineTo(3f, 21f)
+                close()
+                moveTo(9f, 3f)
+                lineTo(9f, 18f)
+                moveTo(15f, 6f)
+                lineTo(15f, 21f)
+            }
+            FieldIcon.NOTE -> {
+                canvas.drawRoundRect(5f, 3f, 20f, 21f, 2f, 2f, pen)
+                line(9f, 3f, 9f, 21f)
+                line(12f, 9f, 17f, 9f)
+                line(12f, 13f, 17f, 13f)
+            }
+            FieldIcon.TRIP -> {
+                canvas.drawRoundRect(4f, 8f, 20f, 21f, 3f, 3f, pen)
+                path {
+                    moveTo(8f, 8f)
+                    lineTo(8f, 6f)
+                    quadTo(8f, 4f, 10f, 4f)
+                    lineTo(14f, 4f)
+                    quadTo(16f, 4f, 16f, 6f)
+                    lineTo(16f, 8f)
+                }
+                line(4f, 14f, 20f, 14f)
+            }
+            FieldIcon.DRAFT, FieldIcon.DOCUMENT -> path {
+                moveTo(5f, 3f)
+                lineTo(14f, 3f)
+                lineTo(19f, 8f)
+                lineTo(19f, 21f)
+                lineTo(5f, 21f)
+                close()
+                moveTo(14f, 3f)
+                lineTo(14f, 8f)
+                lineTo(19f, 8f)
+                moveTo(8f, 12f)
+                lineTo(16f, 12f)
+                moveTo(8f, 16f)
+                lineTo(13f, 16f)
+            }
+            FieldIcon.DATA -> {
+                canvas.drawRoundRect(3f, 5f, 21f, 20f, 2f, 2f, pen)
+                line(3f, 10f, 21f, 10f)
+                line(10f, 14f, 14f, 14f)
+            }
+            FieldIcon.BACK -> path {
+                moveTo(15f, 5f)
+                lineTo(8f, 12f)
+                lineTo(15f, 19f)
+            }
+            FieldIcon.PARENT_AREA -> {
+                canvas.drawRoundRect(3f, 4f, 21f, 20f, 3f, 3f, pen)
+                path {
+                    moveTo(8f, 13f)
+                    lineTo(12f, 9f)
+                    lineTo(16f, 13f)
+                    lineTo(12f, 16f)
+                    close()
+                }
+            }
+            FieldIcon.CAMERA -> {
+                path {
+                    moveTo(4f, 7f)
+                    lineTo(8f, 7f)
+                    lineTo(10f, 4f)
+                    lineTo(15f, 4f)
+                    lineTo(17f, 7f)
+                    lineTo(20f, 7f)
+                    quadTo(22f, 7f, 22f, 9f)
+                    lineTo(22f, 18f)
+                    quadTo(22f, 20f, 20f, 20f)
+                    lineTo(4f, 20f)
+                    quadTo(2f, 20f, 2f, 18f)
+                    lineTo(2f, 9f)
+                    quadTo(2f, 7f, 4f, 7f)
+                    close()
+                }
+                circle(12f, 13.5f, 3.5f)
+            }
+            FieldIcon.IMAGE -> {
+                canvas.drawRoundRect(3f, 4f, 21f, 20f, 3f, 3f, pen)
+                circle(8f, 9f, 1.5f)
+                path {
+                    moveTo(4f, 17f)
+                    lineTo(9f, 13f)
+                    lineTo(12f, 16f)
+                    lineTo(16f, 11f)
+                    lineTo(21f, 17f)
+                }
+            }
+            FieldIcon.POINT -> {
                 path {
                     moveTo(19f, 9f)
                     cubicTo(19f, 14f, 12f, 21f, 12f, 21f)
@@ -374,7 +462,7 @@ private class MapIconDrawable(private val size: Int, private val icon: MapIcon, 
                 }
                 circle(12f, 9f, 2.2f)
             }
-            MapIcon.AREA -> {
+            FieldIcon.AREA -> {
                 path {
                     moveTo(5f, 7f)
                     lineTo(18f, 4f)
@@ -389,7 +477,7 @@ private class MapIconDrawable(private val size: Int, private val icon: MapIcon, 
                 circle(8f, 20f, 1.8f)
                 pen.style = Paint.Style.STROKE
             }
-            MapIcon.COORDINATES -> {
+            FieldIcon.COORDINATES -> {
                 path {
                     moveTo(9f, 4f)
                     lineTo(4f, 4f)
@@ -406,7 +494,7 @@ private class MapIconDrawable(private val size: Int, private val icon: MapIcon, 
                 }
                 circle(12f, 12f, 2.5f)
             }
-            MapIcon.LAYERS -> path {
+            FieldIcon.LAYERS -> path {
                 moveTo(3f, 8f)
                 lineTo(12f, 3f)
                 lineTo(21f, 8f)
@@ -419,21 +507,23 @@ private class MapIconDrawable(private val size: Int, private val icon: MapIcon, 
                 lineTo(12f, 21f)
                 lineTo(21f, 16f)
             }
-            MapIcon.SET_POINT, MapIcon.DONE_AREA -> path {
+            FieldIcon.SET_POINT, FieldIcon.DONE_AREA -> path {
                 moveTo(5f, 12f)
                 lineTo(10f, 17f)
                 lineTo(19f, 7f)
             }
-            MapIcon.CANCEL -> {
+            FieldIcon.CANCEL, FieldIcon.CLOSE -> {
                 line(6f, 6f, 18f, 18f)
                 line(6f, 18f, 18f, 6f)
             }
-            MapIcon.ADD_VERTEX -> {
-                circle(12f, 12f, 9f)
-                line(8f, 12f, 16f, 12f)
-                line(12f, 8f, 12f, 16f)
+            FieldIcon.ADD_VERTEX -> path {
+                moveTo(12f, 5f)
+                lineTo(19f, 12f)
+                lineTo(12f, 19f)
+                lineTo(5f, 12f)
+                close()
             }
-            MapIcon.UNDO_VERTEX -> path {
+            FieldIcon.UNDO_VERTEX -> path {
                 moveTo(9f, 5f)
                 lineTo(4f, 10f)
                 lineTo(9f, 15f)
@@ -442,11 +532,11 @@ private class MapIconDrawable(private val size: Int, private val icon: MapIcon, 
                 cubicTo(21f, 10f, 21f, 19f, 14f, 19f)
                 lineTo(12f, 19f)
             }
-            MapIcon.ZOOM_IN, MapIcon.ZOOM_OUT -> {
+            FieldIcon.ZOOM_IN, FieldIcon.ZOOM_OUT -> {
                 line(5f, 12f, 19f, 12f)
-                if (icon == MapIcon.ZOOM_IN) line(12f, 5f, 12f, 19f)
+                if (icon == FieldIcon.ZOOM_IN) line(12f, 5f, 12f, 19f)
             }
-            MapIcon.LOCATION, MapIcon.GPS_POINT -> {
+            FieldIcon.LOCATION, FieldIcon.GPS_POINT -> {
                 circle(12f, 12f, 8f)
                 line(12f, 1f, 12f, 4f)
                 line(12f, 20f, 12f, 23f)
@@ -458,6 +548,11 @@ private class MapIconDrawable(private val size: Int, private val icon: MapIcon, 
             }
         }
         canvas.restore()
+        if (adding) {
+            line(17.5f, 5f, 22.5f, 5f)
+            line(20f, 2.5f, 20f, 7.5f)
+        }
+        canvas.restore()
     }
 
     override fun setAlpha(alpha: Int) { pen.alpha = alpha }
@@ -467,52 +562,8 @@ private class MapIconDrawable(private val size: Int, private val icon: MapIcon, 
 }
 
 internal fun Context.editorAction(done: Boolean, click: () -> Unit) =
-    android.widget.ImageButton(this).apply {
-        contentDescription = if (done) "Сохранить и закрыть" else "Назад"
-        minimumWidth = dp(48)
-        minimumHeight = dp(48)
-        background = RippleDrawable(ColorStateList.valueOf(0x25306679),
-            panel(if (done) Palette.green else Palette.pale, 24), null)
-        scaleType = android.widget.ImageView.ScaleType.CENTER
-        setPadding(0, 0, 0, 0)
-        setOnClickListener { click() }
-        setImageDrawable(object : android.graphics.drawable.Drawable() {
-            override fun getIntrinsicWidth() = dp(19)
-            override fun getIntrinsicHeight() = dp(19)
-
-            private val pen = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = if (done) Color.WHITE else Palette.pine
-                style = Paint.Style.STROKE
-                strokeWidth = 2f
-                strokeCap = Paint.Cap.ROUND
-                strokeJoin = Paint.Join.ROUND
-            }
-            private val mark = Path().apply {
-                if (done) {
-                    moveTo(3.5f, 9.5f)
-                    lineTo(7.5f, 13.5f)
-                    lineTo(15.5f, 5.5f)
-                } else {
-                    moveTo(11.5f, 4f)
-                    lineTo(6f, 9.5f)
-                    lineTo(11.5f, 15f)
-                }
-            }
-
-            override fun draw(canvas: Canvas) {
-                canvas.save()
-                canvas.translate(bounds.left.toFloat(), bounds.top.toFloat())
-                canvas.scale(bounds.width() / 19f, bounds.height() / 19f)
-                canvas.drawPath(mark, pen)
-                canvas.restore()
-            }
-
-            override fun setAlpha(alpha: Int) { pen.alpha = alpha }
-            override fun setColorFilter(colorFilter: ColorFilter?) { pen.colorFilter = colorFilter }
-            @Deprecated("Drawable opacity is no longer used")
-            override fun getOpacity() = PixelFormat.TRANSLUCENT
-        })
-    }
+    iconAction(if (done) FieldIcon.DONE_AREA else FieldIcon.BACK,
+        description = if (done) "Сохранить и закрыть" else "Назад", primary = done, click = click)
 
 @android.annotation.SuppressLint("ViewConstructor")
 internal class DiaryRow(context: Context) : LinearLayout(context) {

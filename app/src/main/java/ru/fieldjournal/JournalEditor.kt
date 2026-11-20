@@ -257,51 +257,57 @@ internal class JournalEditor(
         }
         updateParent()
         body.addView(parent)
-        body.addSpace(5)
-        body.addView(activity.action("Родительская область") {
-            val candidates = activity.store.groupCandidates(value)
-            activity.fieldworkSheet("Родительская область") { sheet ->
-                parentId?.let(activity.store::site)?.let { group ->
-                    addView(activity.action("Открыть «${group.title}»") {
-                        sheet.dismiss()
-                        activity.openGroupSite(group.id)
-                    }, -1, -2)
-                    addSpace(6)
-                }
-                if (candidates.isEmpty()) addView(activity.label("Подходящих областей нет", 14f, Palette.muted))
-                for (candidate in candidates) activity.card(this, candidate.title, candidate.symbol.title) {
-                    parentId = candidate.id
-                    updateParent()
-                    changed()
-                    sheet.dismiss()
-                }
-                if (parentId != null) addView(activity.action("Убрать связь") {
-                    parentId = null
-                    updateParent()
-                    changed()
-                    sheet.dismiss()
-                }, -1, -2)
+        body.addSpace(8)
+        val parentButton = activity.iconAction(FieldIcon.PARENT_AREA) {
+            chooseParent(value, ::updateParent)
+        }
+        val mayCreateParts = value.area && !isNew
+        addToolRow(buildList {
+            add(parentButton)
+            if (mayCreateParts) {
+                add(activity.iconAction(FieldIcon.POINT, "Добавить точку внутри") {
+                    activity.createInside(value, area = false)
+                })
+                add(activity.iconAction(FieldIcon.AREA, "Добавить область внутри") {
+                    activity.createInside(value, area = true)
+                })
             }
-        }, -1, -2)
+        })
         adoptionNotice()?.let { notice ->
             body.addSpace(8)
             body.addView(activity.label(notice, 14f, Palette.pine))
         }
-        if (!value.area || isNew) return
-        body.addSpace(8)
-        body.addView(activity.horizontal().apply {
-            for ((icon, drawArea) in listOf(MapIcon.POINT to false, MapIcon.AREA to true)) {
-                val button = activity.mapAction(icon) { activity.createInside(value, area = drawArea) }.apply {
-                    contentDescription = if (drawArea) "Добавить область внутри" else "Добавить точку внутри"
-                    tooltipText = contentDescription
-                }
-                addView(button, LinearLayout.LayoutParams(activity.dp(48), activity.dp(48)).apply {
-                    marginEnd = activity.dp(8)
-                })
+        if (mayCreateParts) {
+            body.addSpace(8)
+            for (child in activity.store.children(value.id)) activity.card(body, child.title, child.symbol.title,
+                SymbolView(activity, child.symbol)) { activity.openGroupSite(child.id) }
+        }
+    }
+
+    private fun chooseParent(value: Site, updateParent: () -> Unit) {
+        val candidates = activity.store.groupCandidates(value)
+        activity.fieldworkSheet("Родительская область") { sheet ->
+            parentId?.let(activity.store::site)?.let { group ->
+                addView(activity.action("Открыть «${group.title}»") {
+                    sheet.dismiss()
+                    activity.openGroupSite(group.id)
+                }, -1, -2)
+                addSpace(6)
             }
-        }, -1, -2)
-        for (child in activity.store.children(value.id)) activity.card(body, child.title, child.symbol.title,
-            SymbolView(activity, child.symbol)) { activity.openGroupSite(child.id) }
+            if (candidates.isEmpty()) addView(activity.label("Подходящих областей нет", 14f, Palette.muted))
+            for (candidate in candidates) activity.card(this, candidate.title, candidate.symbol.title) {
+                parentId = candidate.id
+                updateParent()
+                changed()
+                sheet.dismiss()
+            }
+            if (parentId != null) addView(activity.action("Убрать связь") {
+                parentId = null
+                updateParent()
+                changed()
+                sheet.dismiss()
+            }, -1, -2)
+        }
     }
 
     internal fun adoptionNotice(): String? {
@@ -551,13 +557,24 @@ internal class JournalEditor(
         })
     }
 
+    private fun addToolRow(buttons: List<View>) {
+        body.addView(activity.horizontal().apply {
+            weightSum = 3f
+            for ((index, button) in buttons.withIndex()) {
+                addView(button, LinearLayout.LayoutParams(0, activity.dp(52), 1f).apply {
+                    if (index > 0) marginStart = activity.dp(6)
+                })
+            }
+        }, -1, -2)
+    }
+
     private fun addMedia() {
         section("Фотографии и материалы")
-        val row = activity.horizontal()
-        chip(row, "Снять") { activity.capturePhoto(owner, note != null) }
-        chip(row, "Фото") { activity.pickAttachment(owner, note != null, true) }
-        chip(row, "Документ") { activity.pickAttachment(owner, note != null, false) }
-        body.addView(row, -1, -2)
+        addToolRow(listOf(
+            activity.iconAction(FieldIcon.CAMERA) { activity.capturePhoto(owner, note != null) },
+            activity.iconAction(FieldIcon.IMAGE) { activity.pickAttachment(owner, note != null, true) },
+            activity.iconAction(FieldIcon.DOCUMENT) { activity.pickAttachment(owner, note != null, false) }
+        ))
         body.addSpace(7)
         mediaList = activity.vertical()
         body.addView(mediaList, -1, -2)
@@ -602,7 +619,7 @@ internal class JournalEditor(
             body.addView(activity.action("${entry.title} · ${dateLabel(entry.created)}") { activity.openRelatedNote(entry.id) }, -1, -2)
             body.addSpace(4)
         }
-        body.addView(activity.action("+ Запись об объекте", true) { activity.createNote(owner) }, -1, -2)
+        body.addView(activity.addAction("Запись об объекте", FieldIcon.NOTE) { activity.createNote(owner) }, -1, -2)
     }
 
     fun stageAttachment(record: Attachment) {

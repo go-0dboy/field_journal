@@ -273,7 +273,7 @@ class StoreSmokeTest {
         assertFalse(text.contains("Полевой дневник"))
         assertTrue(text.containsAll(listOf("Карта", "Объекты", "Дневник")))
         val buttons = ArrayList<android.view.View>()
-        for (icon in listOf(MapIcon.POINT, MapIcon.AREA, MapIcon.COORDINATES, MapIcon.LAYERS)) {
+        for (icon in listOf(FieldIcon.POINT, FieldIcon.AREA, FieldIcon.COORDINATES, FieldIcon.LAYERS)) {
             buttons.clear()
             root.findViewsWithText(buttons, icon.description, android.view.View.FIND_VIEWS_WITH_CONTENT_DESCRIPTION)
             assertTrue(buttons.any { it is android.widget.ImageButton && it.contentDescription == icon.description })

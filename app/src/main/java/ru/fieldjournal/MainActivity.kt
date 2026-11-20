@@ -39,11 +39,11 @@ import java.util.concurrent.Executors
 import kotlin.math.roundToInt
 
 class MainActivity : Activity() {
-    private enum class Tab(val title: String, val icon: NavIcon) {
-        MAP("Карта", NavIcon.MAP), SITES("Объекты", NavIcon.PIN), NOTES("Дневник", NavIcon.NOTE), SETTINGS("Данные", NavIcon.DATA)
+    private enum class Tab(val title: String, val icon: FieldIcon) {
+        MAP("Карта", FieldIcon.MAP), SITES("Объекты", FieldIcon.POINT), NOTES("Дневник", FieldIcon.NOTE), SETTINGS("Данные", FieldIcon.DATA)
     }
-    private enum class DiaryPage(val title: String, val icon: NavIcon) {
-        RECORDS("Записи", NavIcon.NOTE), TRIPS("Выезды", NavIcon.TRIP), DRAFTS("Черновики", NavIcon.DRAFT)
+    private enum class DiaryPage(val title: String, val icon: FieldIcon) {
+        RECORDS("Записи", FieldIcon.NOTE), TRIPS("Выезды", FieldIcon.TRIP), DRAFTS("Черновики", FieldIcon.DRAFT)
     }
     private var diaryPage = DiaryPage.RECORDS
     private var diaryTripId: String? = null
@@ -446,8 +446,8 @@ class MainActivity : Activity() {
         }
         updateNavigationVisibility()
         val onMap = tab == Tab.MAP
-        nav.background = panel(if (onMap) Palette.floatingSurface else Palette.white, 22, Palette.border)
-        nav.elevation = if (onMap) dp(4).toFloat() else 0f
+        nav.background = panel(if (onMap) Palette.floatingSurface else Palette.white, 20, Palette.border)
+        nav.elevation = dp(if (onMap) 4 else 2).toFloat()
         for (item in Tab.entries) {
             val button = navigationAction(item.title, item.icon, item == tab) { switch(item) }
             nav.addView(button, LinearLayout.LayoutParams(0, -2, 1f))
@@ -470,7 +470,10 @@ class MainActivity : Activity() {
     }
 
     private fun setEditorHeader(title: String) {
-        val row = horizontal().apply { setPadding(dp(16), dp(8), dp(16), dp(8)) }
+        val row = horizontal().apply {
+            setPadding(dp(16), dp(8), dp(16), dp(8))
+            setBackgroundColor(Palette.white)
+        }
         row.addView(editorAction(done = false) { closeEditor() }, dp(48), dp(48))
         val name = label(title, 19f, Palette.pine, true)
         if (android.os.Build.VERSION.SDK_INT >= 28) name.isAccessibilityHeading = true
@@ -479,6 +482,7 @@ class MainActivity : Activity() {
             marginStart = dp(8)
         })
         header.addView(row)
+        header.addView(View(this).apply { setBackgroundColor(Palette.border) }, -1, dp(1))
     }
 
     private fun switch(next: Tab) {
@@ -555,12 +559,12 @@ class MainActivity : Activity() {
             mapZoomButtons = vertical().apply {
                 clipChildren = false
                 clipToPadding = false
-                addView(mapAction(MapIcon.ZOOM_IN) { map.zoomBy(1.0) }, dp(48), dp(48))
-                addView(mapAction(MapIcon.ZOOM_OUT) { map.zoomBy(-1.0) },
+                addView(mapAction(FieldIcon.ZOOM_IN) { map.zoomBy(1.0) }, dp(48), dp(48))
+                addView(mapAction(FieldIcon.ZOOM_OUT) { map.zoomBy(-1.0) },
                     LinearLayout.LayoutParams(dp(48), dp(48)).apply { topMargin = dp(8) })
             }
             addView(mapZoomButtons, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER_VERTICAL or Gravity.END))
-            mapLocationButton = mapAction(MapIcon.LOCATION) { requestLocation() }
+            mapLocationButton = mapAction(FieldIcon.LOCATION) { requestLocation() }
             addView(mapLocationButton, FrameLayout.LayoutParams(dp(48), dp(48), Gravity.BOTTOM or Gravity.END))
         }
     }
@@ -666,7 +670,7 @@ class MainActivity : Activity() {
             setPadding(dp(12), dp(5), dp(12), dp(6))
             clipChildren = false
             clipToPadding = false
-            fun control(icon: MapIcon, primary: Boolean = false, click: () -> Unit) {
+            fun control(icon: FieldIcon, primary: Boolean = false, click: () -> Unit) {
                 addView(mapAction(icon, primary, click),
                     LinearLayout.LayoutParams(dp(48), dp(48)).apply {
                         if (childCount > 0) marginStart = dp(4)
@@ -675,35 +679,35 @@ class MainActivity : Activity() {
             fun spacer() = addView(View(this@MainActivity), LinearLayout.LayoutParams(0, 0, 1f))
             when (drawMode) {
                 DrawMode.NONE -> {
-                    control(MapIcon.POINT, true) { beginDraw(DrawMode.POINT) }
-                    control(MapIcon.AREA) { beginDraw(DrawMode.AREA) }
-                    control(MapIcon.COORDINATES) { showMapCoordinates() }
+                    control(FieldIcon.POINT, true) { beginDraw(DrawMode.POINT) }
+                    control(FieldIcon.AREA) { beginDraw(DrawMode.AREA) }
+                    control(FieldIcon.COORDINATES) { showMapCoordinates() }
                     spacer()
-                    control(MapIcon.LAYERS) { chooseLayers() }
+                    control(FieldIcon.LAYERS) { chooseLayers() }
                 }
                 DrawMode.POINT, DrawMode.MOVE_POINT -> {
-                    control(MapIcon.LAYERS) { chooseLayers() }
-                    control(MapIcon.COORDINATES) { showPointCoordinates() }
-                    control(MapIcon.GPS_POINT) {
+                    control(FieldIcon.LAYERS) { chooseLayers() }
+                    control(FieldIcon.COORDINATES) { showPointCoordinates() }
+                    control(FieldIcon.GPS_POINT) {
                         recentFix()?.let(::selectGpsPoint) ?: requestLocation(LocationAction.SELECT_POINT)
                     }
                     spacer()
-                    control(MapIcon.SET_POINT, true) {
+                    control(FieldIcon.SET_POINT, true) {
                         val point = selectedPoint ?: map.center
                         saveGeometry(listOf(point), selectedMeasurement)
                     }
-                    control(MapIcon.CANCEL) { cancelDraw() }
+                    control(FieldIcon.CANCEL) { cancelDraw() }
                 }
                 DrawMode.AREA, DrawMode.MOVE_AREA -> {
-                    control(MapIcon.LAYERS) { chooseLayers() }
-                    control(MapIcon.ADD_VERTEX) { addVertex(map.center) }
-                    control(MapIcon.UNDO_VERTEX) { removeVertex(vertices.lastIndex) }
+                    control(FieldIcon.LAYERS) { chooseLayers() }
+                    control(FieldIcon.ADD_VERTEX) { addVertex(map.center) }
+                    control(FieldIcon.UNDO_VERTEX) { removeVertex(vertices.lastIndex) }
                     spacer()
-                    control(MapIcon.DONE_AREA, true) {
+                    control(FieldIcon.DONE_AREA, true) {
                         val error = polygonError(vertices)
                         if (error == null) saveGeometry(vertices.toList()) else message(error.message)
                     }
-                    control(MapIcon.CANCEL) { cancelDraw() }
+                    control(FieldIcon.CANCEL) { cancelDraw() }
                 }
             }
         }, -1, -2)
@@ -890,21 +894,37 @@ class MainActivity : Activity() {
     }
 
     internal fun chooseType(title: String, selection: (ObjectType) -> Unit) {
-        val list = vertical().apply { setPadding(dp(12), dp(4), dp(12), dp(6)) }
-        val dialog = AlertDialog.Builder(this).setTitle(title).setView(ScrollView(this).apply { addView(list) })
-            .setPositiveButton("Отмена", null).create()
-        for (type in objectTypes) {
-            val row = horizontal().apply {
-                minimumHeight = dp(49)
-                setPadding(dp(8), 0, dp(8), 0)
-                addView(SymbolView(this@MainActivity, type), dp(35), dp(35))
-                addView(label(type.title, 16f).apply { setPadding(dp(12), 0, 0, 0) })
-                isFocusable = true
-                setOnClickListener { dialog.dismiss(); selection(type) }
+        fieldworkSheet(title) { dialog ->
+            for (types in objectTypes.chunked(2)) {
+                addView(horizontal().apply {
+                    gravity = Gravity.TOP
+                    weightSum = 2f
+                    for ((index, type) in types.withIndex()) {
+                        val tile = vertical().apply {
+                            gravity = Gravity.CENTER
+                            minimumHeight = dp(82)
+                            setPadding(dp(8), dp(7), dp(8), dp(7))
+                            background = android.graphics.drawable.RippleDrawable(Palette.ripple,
+                                panel(Palette.control, 15), null)
+                            addView(SymbolView(this@MainActivity, type), dp(32), dp(32))
+                            addSpace(4)
+                            addView(label(type.title, 14f, Palette.ink, true).apply {
+                                gravity = Gravity.CENTER
+                            }, -1, -2)
+                            isFocusable = true
+                            setOnClickListener {
+                                dialog.dismiss()
+                                selection(type)
+                            }
+                        }
+                        addView(tile, LinearLayout.LayoutParams(0, -2, 1f).apply {
+                            if (index > 0) marginStart = dp(6)
+                        })
+                    }
+                }, -1, -2)
+                addSpace(6)
             }
-            list.addView(row, -1, -2)
         }
-        dialog.show()
     }
 
     private fun requestLocation(action: LocationAction = LocationAction.CENTER_MAP) {
@@ -988,167 +1008,160 @@ class MainActivity : Activity() {
     }
 
     private fun chooseLayers() {
-        val dialog = AlertDialog.Builder(this).create()
-        val body = vertical().apply { setPadding(dp(16), dp(14), dp(16), dp(14)) }
-        body.addView(horizontal().apply {
-            addView(label("Слои карты", 22f, Palette.pine, true).apply {
-                if (android.os.Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true
-            }, LinearLayout.LayoutParams(0, -2, 1f))
-            addView(action("Закрыть") { dialog.dismiss() })
-        }, -1, -2)
-        body.addSpace(10)
-        val controls = vertical()
-        body.addView(controls, -1, -2)
+        fieldworkSheet("Слои карты") { dialog ->
+            val controls = vertical()
+            addView(controls, -1, -2)
 
-        fun redrawControls() {
-            controls.removeAllViews()
-            controls.addView(horizontal().apply {
-                background = panel(Palette.paper, 18)
-                setPadding(dp(3), dp(3), dp(3), dp(3))
-                for (layer in MapLayer.entries) {
-                    addView(action(layer.title, tiles.layer == layer) {
-                        if (tiles.layer != layer) {
-                            tiles.layer = layer
-                            map.refresh()
-                            updateMapStatus()
-                            redrawControls()
-                        }
-                    }.apply {
-                        isSelected = tiles.layer == layer
-                        setPadding(dp(3), 0, dp(3), 0)
-                    }, LinearLayout.LayoutParams(0, -2, 1f).apply {
-                        if (layer != MapLayer.entries.last()) marginEnd = dp(3)
-                    })
-                }
-            }, -1, -2)
-            controls.addSpace(12)
-            val history = tiles.info(MapPackage.HISTORICAL)
-            val references = tiles.info(MapPackage.REFERENCES)
-            val group = vertical().apply {
-                background = panel(Palette.white, 18, Palette.border)
-                setPadding(dp(12), dp(6), dp(12), dp(8))
-            }
-            controls.addView(group, -1, -2)
-            if (history == null) {
-                group.addView(label("Историческая карта", 17f, Palette.pine, true))
-                group.addSpace(4)
-                group.addView(label("MBTiles, SQLiteDB, GeoPackage", 13f, Palette.muted))
-                group.addSpace(6)
-                group.addView(action("Подключить карту") {
-                    dialog.dismiss()
-                    pickDocument(HISTORICAL, "*/*")
-                }, -1, -2)
-            } else {
-                group.addView(layerSwitch("Историческая карта", tiles.historicalEnabled) {
-                    tiles.historicalEnabled = it
-                    if (!it) map.historicalDivider = null
-                    map.refresh()
-                    updateMapStatus()
-                    redrawControls()
-                }, -1, -2)
-                group.addView(label(history.name, 14f, Palette.muted))
-                if (tiles.historicalEnabled && map.historicalDivider == null) {
-                    group.addSpace(8)
-                    val opacityLabel = label("Непрозрачность · ${tiles.historicalOpacity}%", 14f, Palette.ink, true)
-                    group.addView(opacityLabel)
-                    val slider = SeekBar(this).apply {
-                        contentDescription = "Непрозрачность исторической карты"
-                        max = 90
-                        progress = tiles.historicalOpacity - 10
-                        minimumHeight = dp(48)
-                        setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                            override fun onProgressChanged(bar: SeekBar, value: Int, fromUser: Boolean) {
-                                if (!fromUser) return
-                                tiles.historicalOpacity = value + 10
-                                opacityLabel.text = "Непрозрачность · ${tiles.historicalOpacity}%"
-                                map.invalidate()
+            fun redrawControls() {
+                controls.removeAllViews()
+                controls.addView(horizontal().apply {
+                    background = panel(Palette.paper, 18)
+                    setPadding(dp(3), dp(3), dp(3), dp(3))
+                    for (layer in MapLayer.entries) {
+                        addView(action(layer.title, tiles.layer == layer) {
+                            if (tiles.layer != layer) {
+                                tiles.layer = layer
+                                map.refresh()
+                                updateMapStatus()
+                                redrawControls()
                             }
-                            override fun onStartTrackingTouch(bar: SeekBar) = Unit
-                            override fun onStopTrackingTouch(bar: SeekBar) = Unit
+                        }.apply {
+                            isSelected = tiles.layer == layer
+                            setPadding(dp(3), 0, dp(3), 0)
+                        }, LinearLayout.LayoutParams(0, -2, 1f).apply {
+                            if (layer != MapLayer.entries.last()) marginEnd = dp(3)
                         })
                     }
-                    group.addView(slider, -1, -2)
-                }
-                group.addSpace(6)
-                val comparison = map.historicalDivider
-                group.addView(action(if (comparison == null) "Сравнить карты" else "Закончить сравнение") {
-                    tiles.historicalEnabled = true
-                    map.historicalDivider = if (comparison == null) 0.5f else null
-                    map.refresh()
-                    updateMapStatus()
-                    dialog.dismiss()
-                    if (map.historicalDivider != null) message("Потяните разделитель карт")
                 }, -1, -2)
-                if (comparison != null) {
-                    group.addView(SeekBar(this).apply {
-                        contentDescription = "Граница сравнения карт"
-                        max = 92
-                        progress = (comparison * 100).roundToInt() - 4
-                        minimumHeight = dp(48)
-                        setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                            override fun onProgressChanged(bar: SeekBar, value: Int, fromUser: Boolean) {
-                                if (fromUser) map.historicalDivider = (value + 4) / 100f
-                            }
-                            override fun onStartTrackingTouch(bar: SeekBar) = Unit
-                            override fun onStopTrackingTouch(bar: SeekBar) = Unit
-                        })
-                    }, -1, -2)
+                controls.addSpace(12)
+                val history = tiles.info(MapPackage.HISTORICAL)
+                val references = tiles.info(MapPackage.REFERENCES)
+                val group = vertical().apply {
+                    background = panel(Palette.white, 18, Palette.border)
+                    setPadding(dp(12), dp(6), dp(12), dp(8))
                 }
-                group.addSpace(6)
-                group.addView(horizontal().apply {
-                    addView(action("К участку") {
-                        tiles.historicalEnabled = true
-                        map.refresh()
-                        moveToPackage(history)
-                        dialog.dismiss()
-                    }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(6) })
-                    addView(action("Заменить") {
+                controls.addView(group, -1, -2)
+                if (history == null) {
+                    group.addView(label("Историческая карта", 17f, Palette.pine, true))
+                    group.addSpace(4)
+                    group.addView(label("MBTiles, SQLiteDB, GeoPackage", 13f, Palette.muted))
+                    group.addSpace(6)
+                    group.addView(addAction("Подключить карту", FieldIcon.MAP, primary = false) {
                         dialog.dismiss()
                         pickDocument(HISTORICAL, "*/*")
-                    }, LinearLayout.LayoutParams(0, -2, 1f))
-                }, -1, -2)
-            }
-            if (tiles.layer == MapLayer.HYBRID || tiles.historicalEnabled) {
-                group.addSpace(8)
-                val source = tiles.referenceSource()
-                group.addView(layerSwitch("Современные дороги и подписи", tiles.referencesEnabled,
-                    enabled = source == ReferenceSource.ESRI || references != null) {
-                    tiles.referencesEnabled = it
-                    map.refresh()
-                }, -1, -2)
-                if (!tiles.offline) {
-                    group.addView(action("Подписи · ${source.title}") {
-                        AlertDialog.Builder(this)
-                            .setTitle("Источник подписей")
-                            .setSingleChoiceItems(ReferenceSource.entries.map(ReferenceSource::title).toTypedArray(), source.ordinal) { picker, index ->
-                                tiles.onlineReferenceSource = ReferenceSource.entries[index]
-                                map.refresh()
-                                picker.dismiss()
-                                redrawControls()
-                            }.setPositiveButton("Отмена", null).show()
+                    }, -1, -2)
+                } else {
+                    group.addView(layerSwitch("Историческая карта", tiles.historicalEnabled) {
+                        tiles.historicalEnabled = it
+                        if (!it) map.historicalDivider = null
+                        map.refresh()
+                        updateMapStatus()
+                        redrawControls()
+                    }, -1, -2)
+                    group.addView(label(history.name, 14f, Palette.muted))
+                    if (tiles.historicalEnabled && map.historicalDivider == null) {
+                        group.addSpace(8)
+                        val opacityLabel = label("Непрозрачность · ${tiles.historicalOpacity}%", 14f, Palette.ink, true)
+                        group.addView(opacityLabel)
+                        val slider = SeekBar(this@MainActivity).apply {
+                            contentDescription = "Непрозрачность исторической карты"
+                            max = 90
+                            progress = tiles.historicalOpacity - 10
+                            minimumHeight = dp(48)
+                            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                                override fun onProgressChanged(bar: SeekBar, value: Int, fromUser: Boolean) {
+                                    if (!fromUser) return
+                                    tiles.historicalOpacity = value + 10
+                                    opacityLabel.text = "Непрозрачность · ${tiles.historicalOpacity}%"
+                                    map.invalidate()
+                                }
+                                override fun onStartTrackingTouch(bar: SeekBar) = Unit
+                                override fun onStopTrackingTouch(bar: SeekBar) = Unit
+                            })
+                        }
+                        group.addView(slider, -1, -2)
+                    }
+                    group.addSpace(6)
+                    val comparison = map.historicalDivider
+                    group.addView(action(if (comparison == null) "Сравнить карты" else "Закончить сравнение") {
+                        tiles.historicalEnabled = true
+                        map.historicalDivider = if (comparison == null) 0.5f else null
+                        map.refresh()
+                        updateMapStatus()
+                        dialog.dismiss()
+                        if (map.historicalDivider != null) message("Потяните разделитель карт")
+                    }, -1, -2)
+                    if (comparison != null) {
+                        group.addView(SeekBar(this@MainActivity).apply {
+                            contentDescription = "Граница сравнения карт"
+                            max = 92
+                            progress = (comparison * 100).roundToInt() - 4
+                            minimumHeight = dp(48)
+                            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                                override fun onProgressChanged(bar: SeekBar, value: Int, fromUser: Boolean) {
+                                    if (fromUser) map.historicalDivider = (value + 4) / 100f
+                                }
+                                override fun onStartTrackingTouch(bar: SeekBar) = Unit
+                                override fun onStopTrackingTouch(bar: SeekBar) = Unit
+                            })
+                        }, -1, -2)
+                    }
+                    group.addSpace(6)
+                    group.addView(horizontal().apply {
+                        addView(action("К участку") {
+                            tiles.historicalEnabled = true
+                            map.refresh()
+                            moveToPackage(history)
+                            dialog.dismiss()
+                        }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(6) })
+                        addView(action("Заменить") {
+                            dialog.dismiss()
+                            pickDocument(HISTORICAL, "*/*")
+                        }, LinearLayout.LayoutParams(0, -2, 1f))
                     }, -1, -2)
                 }
-                group.addView(label(references?.name ?: "Подключите прозрачный пакет для локальных подписей", 13f, Palette.muted))
-                group.addSpace(6)
-                group.addView(action(if (references == null) "Подключить подписи" else "Заменить подписи") {
+                if (tiles.layer == MapLayer.HYBRID || tiles.historicalEnabled) {
+                    group.addSpace(8)
+                    val source = tiles.referenceSource()
+                    group.addView(layerSwitch("Современные дороги и подписи", tiles.referencesEnabled,
+                        enabled = source == ReferenceSource.ESRI || references != null) {
+                        tiles.referencesEnabled = it
+                        map.refresh()
+                    }, -1, -2)
+                    if (!tiles.offline) {
+                        group.addView(action("Подписи · ${source.title}") {
+                            AlertDialog.Builder(this@MainActivity)
+                                .setTitle("Источник подписей")
+                                .setSingleChoiceItems(ReferenceSource.entries.map(ReferenceSource::title).toTypedArray(), source.ordinal) { picker, index ->
+                                    tiles.onlineReferenceSource = ReferenceSource.entries[index]
+                                    map.refresh()
+                                    picker.dismiss()
+                                    redrawControls()
+                                }.setPositiveButton("Отмена", null).show()
+                        }, -1, -2)
+                    }
+                    group.addView(label(references?.name ?: "Подключите прозрачный пакет для локальных подписей", 13f, Palette.muted))
+                    group.addSpace(6)
+                    val connect = {
+                        dialog.dismiss()
+                        pickDocument(REFERENCES, "*/*")
+                    }
+                    group.addView(if (references == null) addAction("Подключить подписи", FieldIcon.LAYERS, primary = false, click = connect)
+                        else action("Заменить подписи", click = connect), -1, -2)
+                }
+                controls.addSpace(10)
+                controls.addView(layerSwitch("Офлайн-режим", tiles.offline) {
+                    toggleOffline()
+                    redrawControls()
+                }, -1, -2)
+                controls.addView(action("Настройки карт") {
                     dialog.dismiss()
-                    pickDocument(REFERENCES, "*/*")
+                    switch(Tab.SETTINGS)
                 }, -1, -2)
             }
-            controls.addSpace(10)
-            controls.addView(layerSwitch("Офлайн-режим", tiles.offline) {
-                toggleOffline()
-                redrawControls()
-            }, -1, -2)
-            controls.addView(action("Настройки карт") {
-                dialog.dismiss()
-                switch(Tab.SETTINGS)
-            }, -1, -2)
-        }
 
-        redrawControls()
-        dialog.setView(ScrollView(this).apply { addView(body) }, 0, 0, 0, 0)
-        dialog.showFieldSheet()
+            redrawControls()
+        }
     }
 
     @Suppress("UseSwitchCompatOrMaterialCode")
@@ -1271,6 +1284,8 @@ class MainActivity : Activity() {
     private fun showNotes() {
         val loading = vertical().apply { setPadding(dp(14), dp(5), dp(14), dp(8)) }
         loading.addView(horizontal().apply {
+            background = panel(Palette.control, 18)
+            setPadding(dp(4), dp(4), dp(4), dp(4))
             for (page in DiaryPage.entries) {
                 val count = if (page == DiaryPage.DRAFTS) store.draftCount() else 0
                 val title = if (count > 0) "${page.title} · $count" else page.title
@@ -1294,7 +1309,7 @@ class MainActivity : Activity() {
         }
         val filter = filterTripNotes?.let(store.trips::get)
         val trip = filter ?: store.trips.active()
-        loading.addView(action("+ Запись", true) { createNote(null, tripId = trip?.id) }, -1, -2)
+        loading.addView(addAction("Новая запись", FieldIcon.NOTE) { createNote(null, tripId = trip?.id) }, -1, -2)
         loading.addSpace(8)
         if (filter != null) {
             loading.addView(action("${filter.title}  ×") {
@@ -1479,10 +1494,14 @@ class MainActivity : Activity() {
         list.addView(box, -1, -2)
     }
 
-    internal fun card(list: LinearLayout, title: String, detail: String, icon: View? = null, click: () -> Unit) {
+    internal fun card(
+        list: LinearLayout, title: String, detail: String, icon: View? = null,
+        grouped: Boolean = false, click: () -> Unit
+    ) {
         val row = horizontal().apply {
-            background = panel(Palette.white, 13, Palette.border)
-            setPadding(dp(12), dp(11), dp(12), dp(11))
+            background = android.graphics.drawable.RippleDrawable(Palette.ripple,
+                panel(Palette.white, if (grouped) 0 else 18, if (grouped) 0 else Palette.border), null)
+            setPadding(dp(14), dp(12), dp(14), dp(12))
             minimumHeight = dp(64)
             val description = vertical()
             description.addView(label(title, 16f, Palette.ink, true))
@@ -1492,23 +1511,39 @@ class MainActivity : Activity() {
                 description.setPadding(dp(10), 0, dp(6), 0)
             }
             addView(description, LinearLayout.LayoutParams(0, -2, 1f))
-            addView(label("›", 22f, Palette.green))
+            addView(label("›", 22f, Palette.muted).apply {
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            })
             isFocusable = true
             setOnClickListener { click() }
         }
         list.addView(row, -1, -2)
-        list.addSpace(8)
+        if (!grouped) list.addSpace(8)
     }
 
     private fun showSettings() {
         val list = listBody()
-        fun heading(title: String) {
+        fun section(title: String): LinearLayout {
+            list.addSpace(10)
+            list.addView(label(title, 19f, Palette.ink, true).apply {
+                if (android.os.Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true
+            })
             list.addSpace(8)
-            list.addView(label(title, 19f, Palette.pine, true).apply { if (android.os.Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true })
-            list.addSpace(8)
+            return vertical().apply {
+                background = panel(Palette.white, 20, Palette.border)
+                clipToOutline = true
+                list.addView(this, -1, -2)
+            }
         }
-        heading("Картография")
-        card(list, if (tiles.offline) "Режим · офлайн" else "Режим · онлайн",
+        fun row(group: LinearLayout, title: String, detail: String, click: () -> Unit) {
+            if (group.childCount > 0) group.addView(View(this).apply {
+                setBackgroundColor(Palette.border)
+            }, LinearLayout.LayoutParams(-1, dp(1)).apply { marginStart = dp(14) })
+            card(group, title, detail, grouped = true, click = click)
+        }
+
+        val maps = section("Картография")
+        row(maps, if (tiles.offline) "Режим · офлайн" else "Режим · онлайн",
             if (tiles.offline) "Нажмите, чтобы подключить онлайн-подложки" else "Нажмите для работы с локальными подложками") { toggleOffline() }
         for (layer in MapLayer.entries) {
             val info = tiles.info(layer.archive)
@@ -1517,7 +1552,7 @@ class MainActivity : Activity() {
                 layer == MapLayer.HYBRID && tiles.info(MapPackage.SATELLITE) != null -> "Используется офлайн-спутник · можно подключить свою карту"
                 else -> "MBTiles, SQLiteDB или GeoPackage"
             }
-            card(list, "Офлайн · ${layer.title}", detail) {
+            row(maps, "Офлайн · ${layer.title}", detail) {
                 if (info == null) pickMap(layer) else {
                     AlertDialog.Builder(this).setTitle(info.name)
                         .setPositiveButton("Отмена", null)
@@ -1531,17 +1566,18 @@ class MainActivity : Activity() {
             Triple(MapPackage.REFERENCES, "Локальные дороги и подписи", REFERENCES)
         )) {
             val archive = tiles.info(slot)
-            card(list, title, archive?.let { "${it.name} · ${it.format.title}" } ?: "MBTiles, SQLiteDB или GeoPackage") {
+            row(maps, title, archive?.let { "${it.name} · ${it.format.title}" } ?: "MBTiles, SQLiteDB или GeoPackage") {
                 pickDocument(request, "*/*")
             }
         }
-        card(list, "Свой онлайн-источник XYZ",
+        row(maps, "Свой онлайн-источник XYZ",
             if (tiles.customUrl.isBlank()) "Карта по умолчанию · OpenStreetMap" else tiles.customCredit) { customSource() }
-        heading("Обмен и резервные копии")
-        card(list, "Импорт ZIP или GeoJSON", "Существующие записи с теми же ID сохраняются") { pickDocument(IMPORT, "*/*") }
-        card(list, "Экспорт резервной копии", "ZIP · карточки, записи, выезды и вложения") { exportDocument(BACKUP, "application/zip", "field-journal-${shortDate()}.zip") }
-        card(list, "Экспорт объектов GeoJSON", "WGS 84 · точки, контуры и поля карточек") { exportDocument(GEOJSON, "application/geo+json", "field-journal-${shortDate()}.geojson") }
-        card(list, "Экспорт выезда", "Маршрут GPX или комплект для QGIS с объектами и записями") { chooseTripExport() }
+        val exchange = section("Обмен и резервные копии")
+        row(exchange, "Импорт ZIP или GeoJSON", "Существующие записи с теми же ID сохраняются") { pickDocument(IMPORT, "*/*") }
+        row(exchange, "Экспорт резервной копии", "ZIP · карточки, записи, выезды и вложения") { exportDocument(BACKUP, "application/zip", "field-journal-${shortDate()}.zip") }
+        row(exchange, "Экспорт объектов GeoJSON", "WGS 84 · точки, контуры и поля карточек") { exportDocument(GEOJSON, "application/geo+json", "field-journal-${shortDate()}.geojson") }
+        row(exchange, "Экспорт выезда", "Маршрут GPX или комплект для QGIS с объектами и записями") { chooseTripExport() }
+        list.addSpace(10)
         list.addView(label("Подтверждённые изменения хранятся в локальной базе. Файлы карт хранятся отдельно от резервных копий.", 13f, Palette.muted))
     }
 
@@ -1849,18 +1885,20 @@ class MainActivity : Activity() {
     private fun showRasterChoice() {
         val prepared = preparedRaster ?: return
         if (!foreground || rasterDialog != null) return
-        val dialog = AlertDialog.Builder(this).create()
-        val body = vertical().apply {
-            setPadding(dp(16), dp(14), dp(16), dp(14))
-            addView(label("Схема SQLiteDB", 20f, Palette.pine, true))
-            addSpace(6)
+        rasterDialog = fieldworkSheet("Схема SQLiteDB", onCancel = {
+            prepared.close()
+            preparedRaster = null
+            rasterDialog = null
+        }) { dialog ->
             addView(label("В файле схема не указана. Выберите вариант, где координаты соответствуют нужному участку.", 14f, Palette.muted))
             prepared.preview?.let { bitmap ->
+                addSpace(8)
                 addView(ImageView(this@MainActivity).apply {
                     setImageBitmap(bitmap)
                     contentDescription = "Образец тайла"
                 }, -1, dp(110))
             }
+            addSpace(8)
             for (option in prepared.options) {
                 card(this, requireNotNull(option.numbering).title,
                     "${option.center?.display().orEmpty()} · масштаб ${option.minZoom}–${option.maxZoom}") {
@@ -1870,19 +1908,7 @@ class MainActivity : Activity() {
                     finishRasterImport(prepared, option.numbering)
                 }
             }
-            addView(horizontal().apply {
-                gravity = Gravity.END
-                addView(action("Отмена") { dialog.cancel() })
-            }, -1, -2)
         }
-        dialog.setView(ScrollView(this).apply { addView(body) }, 0, 0, 0, 0)
-        dialog.setOnCancelListener {
-            prepared.close()
-            preparedRaster = null
-            rasterDialog = null
-        }
-        rasterDialog = dialog
-        dialog.showFieldSheet()
     }
 
     private fun finishRasterImport(prepared: PreparedRaster, numbering: SqliteNumbering? = null) {

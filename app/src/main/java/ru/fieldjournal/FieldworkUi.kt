@@ -6,7 +6,6 @@ import android.graphics.BitmapFactory
 import android.view.View
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
 import java.io.File
 import java.util.Locale
@@ -105,7 +104,7 @@ internal fun MainActivity.showSitePreview(site: Site) {
             addView(photoThumbnail(photos.first()) { openPhotoGallery(photos, 0) }, -1, dp(132))
         }
         addSpace(12)
-        addView(action("Новое наблюдение", true) {
+        addView(addAction("Новое наблюдение", FieldIcon.NOTE) {
             dialog.dismiss()
             createNote(site.id, compact = true)
         }, -1, -2)
@@ -116,7 +115,7 @@ internal fun MainActivity.showSitePreview(site: Site) {
         }, -1, -2)
         if (trip != null) {
             addSpace(6)
-            addView(action("Отметить посещение") {
+            addView(addAction("Отметить посещение", FieldIcon.POINT, primary = false) {
                 runCatching { store.trips.visit(trip.id, site.id) }.onSuccess {
                     dialog.dismiss()
                     message("Посещение добавлено в выезд")
@@ -153,7 +152,7 @@ internal fun MainActivity.showDrafts(list: LinearLayout) {
 internal fun MainActivity.showTrips(list: LinearLayout) {
     val trips = store.trips.list()
     if (trips.none { it.endedAt == null }) {
-        list.addView(action("+ Выезд", true) { promptTripName() }, -1, -2)
+        list.addView(addAction("Новый выезд", FieldIcon.TRIP) { promptTripName() }, -1, -2)
         list.addSpace(8)
     }
     if (trips.isEmpty()) empty(list, "Выездов пока нет", "Выезд объединяет записи, посещения и маршрут одной полевой работы.")
@@ -168,7 +167,7 @@ private fun MainActivity.promptTripName() {
         val name = edit("Название выезда", "Выезд · ${java.time.LocalDate.now()}")
         addView(name, -1, -2)
         addSpace(10)
-        addView(action("Начать", true) {
+        addView(addAction("Начать выезд", FieldIcon.TRIP) {
             runCatching { store.trips.start(name.text.toString().take(120)) }.onSuccess { trip ->
                 dialog.dismiss()
                 showTripDetails(trip.id)
@@ -192,7 +191,7 @@ internal fun MainActivity.showTripPage(list: LinearLayout, tripId: String) {
     list.addSpace(8)
     list.addView(action("Записи выезда · ${contents.notes.size}") { showTripRecords(trip.id) }, -1, -2)
     list.addSpace(6)
-    list.addView(action("+ Запись в выезд", true) { createNote(null, compact = true, tripId = trip.id) }, -1, -2)
+    list.addView(addAction("Запись в выезд", FieldIcon.NOTE) { createNote(null, compact = true, tripId = trip.id) }, -1, -2)
     list.addSpace(10)
     val stats = label("", 14f, Palette.muted)
     list.addView(stats)
@@ -264,22 +263,4 @@ internal fun MainActivity.chooseTripExport() {
             }
         }
     }
-}
-
-internal fun MainActivity.fieldworkSheet(title: String, populate: LinearLayout.(AlertDialog) -> Unit): AlertDialog {
-    val dialog = AlertDialog.Builder(this).create()
-    val body = vertical().apply {
-        setPadding(dp(16), dp(14), dp(16), dp(14))
-        addView(horizontal().apply {
-            addView(label(title, 21f, Palette.pine, true).apply {
-                if (android.os.Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true
-            }, LinearLayout.LayoutParams(0, -2, 1f))
-            addView(action("Закрыть") { dialog.dismiss() })
-        }, -1, -2)
-        addSpace(10)
-        populate(dialog)
-    }
-    dialog.setView(ScrollView(this).apply { addView(body) }, 0, 0, 0, 0)
-    dialog.showFieldSheet()
-    return dialog
 }

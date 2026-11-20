@@ -37,7 +37,7 @@ class EditorNavigationTest {
             root.text("Карточка объекта")
             assertEquals(site.title, root.input("Название").text.toString())
 
-            root.text("+ Запись об объекте").performClick()
+            root.text("Запись об объекте").performClick()
             root.input("Заголовок").setText("Повторный обход")
             root.action("Сохранить и закрыть").performClick()
             assertFalse(controller.get().store.notes().any { it.title == "Повторный обход" })
@@ -67,7 +67,7 @@ class EditorNavigationTest {
             val confirmation = ShadowAlertDialog.getLatestAlertDialog().window!!.decorView
             confirmation.text("Сохранить изменения?")
             chooseConfirmation("Сохранить")
-            assertTrue(root.text("+ Запись").isShown)
+            assertTrue(root.text("Новая запись").isShown)
             val saved = requireNotNull(activity.store.site(original.id))
             assertEquals("Стоянка у реки", saved.title)
             assertEquals(original.vertices, saved.vertices)
@@ -151,19 +151,19 @@ class EditorNavigationTest {
         try {
             val activity = controller.get()
             val root = activity.window.decorView
-            root.action(MapIcon.POINT.description).performClick()
+            root.action(FieldIcon.POINT.description).performClick()
             layout(root)
             layout(root)
             val hint = root.text("Коснитесь карты или выберите GPS, затем нажмите галочку")
-            val install = root.action(MapIcon.SET_POINT.description)
+            val install = root.action(FieldIcon.SET_POINT.description)
             assertTrue(top(hint) >= top(install) + install.height)
             assertTrue(top(hint) + hint.height <= top(root.action("Моё место")))
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(5))
             assertEquals(View.GONE, hint.visibility)
-            root.action(MapIcon.CANCEL.description).performClick()
+            root.action(FieldIcon.CANCEL.description).performClick()
 
             root.text("Дневник").performClick()
-            root.text("+ Запись").performClick()
+            root.text("Новая запись").performClick()
             layout(root)
             val save = root.action("Сохранить и закрыть")
             val back = root.action("Назад")
@@ -294,7 +294,7 @@ class EditorNavigationTest {
         }
     }
 
-    @Test fun sectionNavigationReplacesHeadersAndObjectEditorUsesMapIconsAndOneSourceAction() {
+    @Test fun sectionNavigationReplacesHeadersAndObjectEditorUsesFieldIconsAndOneSourceAction() {
         val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
         val activity = controller.get()
         val tiles = MapTiles.get(activity)
@@ -308,8 +308,8 @@ class EditorNavigationTest {
             root.text("Дневник").performClick()
             assertEquals(1, count("Дневник"))
             layout(root)
-            assertTrue(root.text("+ Запись").width > 260)
-            assertTrue(top(root.text("+ Запись")) > top(root.text("Записи")))
+            assertTrue(root.text("Новая запись").width > 260)
+            assertTrue(top(root.text("Новая запись")) > top(root.text("Записи")))
             root.text("Данные").performClick()
             assertEquals(0, count("Данные и карты"))
 
@@ -328,6 +328,57 @@ class EditorNavigationTest {
             dialog.text("Найти в Википедии")
         } finally {
             tiles.offline = previousOffline
+            controller.pause().stop().destroy()
+        }
+    }
+
+    @Test fun linkedObjectsAndAttachmentsShareOneIconLayoutAndSheetsCloseWithAnIcon() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        try {
+            val activity = controller.get()
+            val root = activity.window.decorView
+            val region = Site(title = "Территория монастыря", vertices = listOf(
+                Coordinate(59.0, 33.0), Coordinate(59.0, 33.06),
+                Coordinate(59.06, 33.06), Coordinate(59.06, 33.0)
+            ))
+            val group = Site(title = "Монастырский двор", vertices = listOf(
+                Coordinate(59.01, 33.01), Coordinate(59.01, 33.02), Coordinate(59.02, 33.02)
+            ))
+            activity.store.save(region)
+            activity.store.save(group)
+            activity.openSite(group.id)
+            layout(root)
+            fun buttons(vararg labels: String) = labels.map { root.action(it) as android.widget.ImageButton }
+            val links = buttons("Родительская область", "Добавить точку внутри", "Добавить область внутри")
+            val attachments = buttons("Снять фото", "Добавить фото", "Добавить документ")
+            for (row in listOf(links, attachments)) {
+                assertTrue(row.all { it.parent === row.first().parent && it.height >= 48 && it.tooltipText == it.contentDescription })
+                assertEquals(row.map { it.left }.sorted(), row.map { it.left })
+            }
+            assertEquals(links.map { it.width }, attachments.map { it.width })
+            assertTrue(root.descendants().filterIsInstance<TextView>().none { it.text in listOf("Снять", "Фото", "Документ", "Родительская область") })
+
+            links.first().performClick()
+            val sheet = ShadowAlertDialog.getLatestAlertDialog()
+            val contents = requireNotNull(sheet.window).decorView
+            contents.text(region.title)
+            assertTrue(contents.descendants().filterIsInstance<TextView>().none { it.text == "Закрыть" })
+            (contents.action("Закрыть") as android.widget.ImageButton).performClick()
+            assertFalse(sheet.isShowing)
+
+            attachments[0].performClick()
+            val camera = shadowOf(activity).nextStartedActivityForResult.intent
+            assertEquals(android.provider.MediaStore.ACTION_IMAGE_CAPTURE, camera.action)
+            assertTrue(camera.hasExtra(android.provider.MediaStore.EXTRA_OUTPUT))
+            attachments[1].performClick()
+            val photo = shadowOf(activity).nextStartedActivityForResult.intent
+            assertEquals(android.content.Intent.ACTION_OPEN_DOCUMENT, photo.action)
+            assertEquals("image/*", photo.type)
+            attachments[2].performClick()
+            val document = shadowOf(activity).nextStartedActivityForResult.intent
+            assertEquals(android.content.Intent.ACTION_OPEN_DOCUMENT, document.action)
+            assertEquals("*/*", document.type)
+        } finally {
             controller.pause().stop().destroy()
         }
     }

@@ -28,7 +28,7 @@ class MapEditingTest {
             val activity = controller.get()
             val savedIds = activity.store.sites().map(Site::id).toSet()
             val root = activity.window.decorView
-            root.icon(MapIcon.AREA).performClick()
+            root.icon(FieldIcon.AREA).performClick()
             layout(root)
             val map = root.descendants().filterIsInstance<FieldMap>().first()
             map.moveTo(Coordinate(59.0, 33.0), 19.0)
@@ -50,7 +50,7 @@ class MapEditingTest {
             tap(map, 60f, 94f)
             assertEquals(3, map.draft.size)
             assertNull(polygonError(map.draft))
-            root.icon(MapIcon.DONE_AREA).performClick()
+            root.icon(FieldIcon.DONE_AREA).performClick()
             chooseFirstType()
             assertTrue(activity.store.sites().none { it.id !in savedIds })
             confirmSave(activity)
@@ -62,7 +62,7 @@ class MapEditingTest {
             val first = saved.vertices.first()
             val moved = Coordinate(first.latitude - 0.000001, first.longitude)
             map.onVertexMove?.invoke(0, moved)
-            root.icon(MapIcon.DONE_AREA).performClick()
+            root.icon(FieldIcon.DONE_AREA).performClick()
             assertEquals(saved.vertices, activity.store.site(saved.id)?.vertices)
             confirmSave(activity)
             assertEquals(moved, activity.store.site(saved.id)?.vertices?.first())
@@ -88,9 +88,9 @@ class MapEditingTest {
             for (site in listOf(inner, innerPoint, existing, outside)) store.save(site)
             val known = store.sites().map(Site::id).toSet()
 
-            root.icon(MapIcon.AREA).performClick()
+            root.icon(FieldIcon.AREA).performClick()
             for (point in boundary(57.0, 40.0, 57.01, 40.01)) map.onTap?.invoke(point, null)
-            root.icon(MapIcon.DONE_AREA).performClick()
+            root.icon(FieldIcon.DONE_AREA).performClick()
             chooseFirstType()
             val notice = "После сохранения эта область станет родительской для объектов внутри неё. Объектов для привязки — 2."
             root.text(notice)
@@ -110,9 +110,9 @@ class MapEditingTest {
             assertNull(store.site(outside.id)?.parentId)
 
             val point = Coordinate(57.0035, 40.0035)
-            root.icon(MapIcon.POINT).performClick()
+            root.icon(FieldIcon.POINT).performClick()
             map.onTap?.invoke(point, null)
-            root.icon(MapIcon.SET_POINT).performClick()
+            root.icon(FieldIcon.SET_POINT).performClick()
             chooseFirstType()
             confirmSave(activity)
             assertEquals(inner.id, store.sites().single { it.anchor == point && !it.area }.parentId)
@@ -130,7 +130,7 @@ class MapEditingTest {
             val root = activity.window.decorView
             val map = root.descendants().filterIsInstance<FieldMap>().first()
             val clipboard = activity.getSystemService(ClipboardManager::class.java)
-            root.icon(MapIcon.COORDINATES).performClick()
+            root.icon(FieldIcon.COORDINATES).performClick()
             val centerDialog = ShadowAlertDialog.getLatestAlertDialog()
             val prompt = requireNotNull(centerDialog.window).decorView
             layout(prompt)
@@ -140,19 +140,19 @@ class MapEditingTest {
             shadowOf(Looper.getMainLooper()).idle()
             assertEquals(map.center.display(), clipboard.primaryClip?.getItemAt(0)?.text.toString())
 
-            root.icon(MapIcon.POINT).performClick()
+            root.icon(FieldIcon.POINT).performClick()
             layout(root)
             tap(map, 85f, 130f)
             val selected = requireNotNull(map.pointPreview)
             assertNotEquals(map.center, selected)
-            root.icon(MapIcon.COORDINATES).performClick()
+            root.icon(FieldIcon.COORDINATES).performClick()
             val pointPrompt = ShadowAlertDialog.getLatestAlertDialog().window!!.decorView
             layout(pointPrompt)
             assertTrue(pointPrompt.text("Отмена").left > pointPrompt.text("Скопировать").left)
             pointPrompt.text("Скопировать").performClick()
             shadowOf(Looper.getMainLooper()).idle()
             assertEquals(selected.display(), clipboard.primaryClip?.getItemAt(0)?.text.toString())
-            root.icon(MapIcon.SET_POINT).performClick()
+            root.icon(FieldIcon.SET_POINT).performClick()
             chooseFirstType()
             assertTrue(activity.store.sites().none { it.id !in savedIds })
             confirmSave(activity)
@@ -168,7 +168,7 @@ class MapEditingTest {
             val activity = controller.get()
             val root = activity.window.decorView
             val tiles = MapTiles.get(activity)
-            root.icon(MapIcon.LAYERS).performClick()
+            root.icon(FieldIcon.LAYERS).performClick()
             val sheet = requireNotNull(ShadowAlertDialog.getLatestAlertDialog().window).decorView
             sheet.text("Гибрид").performClick()
             assertEquals(MapLayer.HYBRID, tiles.layer)
@@ -206,25 +206,25 @@ class MapEditingTest {
                 time = measuredAt
                 elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
             })
-            root.icon(MapIcon.LOCATION).performClick()
+            root.icon(FieldIcon.LOCATION).performClick()
             val other = Coordinate(60.0, 34.0)
             map.moveTo(other)
             assertTrue(root.text("${point.display()} ±8 м · Выс. 123 м").isShown)
             val clipboard = activity.getSystemService(ClipboardManager::class.java)
-            root.icon(MapIcon.COORDINATES).performClick()
+            root.icon(FieldIcon.COORDINATES).performClick()
             ShadowAlertDialog.getLatestAlertDialog().window!!.decorView.text("Скопировать").performClick()
             assertEquals(point.display(), clipboard.primaryClip?.getItemAt(0)?.text.toString())
 
-            root.icon(MapIcon.COORDINATES).performClick()
+            root.icon(FieldIcon.COORDINATES).performClick()
             ShadowAlertDialog.getLatestAlertDialog().window!!.decorView.text("Центр карты").performClick()
             assertTrue(root.text("${other.display()} · Выс. —").isShown)
             ShadowAlertDialog.getLatestAlertDialog().window!!.decorView.text("Скопировать").performClick()
             assertEquals(other.display(), clipboard.primaryClip?.getItemAt(0)?.text.toString())
 
-            root.icon(MapIcon.POINT).performClick()
-            root.icon(MapIcon.GPS_POINT).performClick()
+            root.icon(FieldIcon.POINT).performClick()
+            root.icon(FieldIcon.GPS_POINT).performClick()
             assertEquals(point, map.pointPreview)
-            root.icon(MapIcon.SET_POINT).performClick()
+            root.icon(FieldIcon.SET_POINT).performClick()
             chooseFirstType()
             confirmSave(activity)
             val saved = activity.store.sites().single { it.id !in savedIds }
@@ -245,7 +245,7 @@ class MapEditingTest {
             val root = activity.window.decorView
             val map = root.descendants().filterIsInstance<FieldMap>().first()
             val savedIds = activity.store.sites().map(Site::id)
-            root.icon(MapIcon.POINT).performClick()
+            root.icon(FieldIcon.POINT).performClick()
             layout(root)
             tap(map, 85f, 140f)
             assertNotNull(map.pointPreview)
@@ -256,9 +256,9 @@ class MapEditingTest {
             assertFalse(map.editingGeometry)
             assertNull(map.pointPreview)
             root.text("Карта").performClick()
-            root.icon(MapIcon.AREA).performClick()
+            root.icon(FieldIcon.AREA).performClick()
             layout(root)
-            root.icon(MapIcon.ADD_VERTEX).performClick()
+            root.icon(FieldIcon.ADD_VERTEX).performClick()
             tap(map, 70f, 200f)
             assertEquals(2, map.draft.size)
             assertTrue(root.text("Дневник").isShown)
@@ -266,7 +266,7 @@ class MapEditingTest {
             assertFalse(map.editingGeometry)
             assertTrue(map.draft.isEmpty())
             root.text("Карта").performClick()
-            assertTrue(root.icon(MapIcon.POINT).isShown)
+            assertTrue(root.icon(FieldIcon.POINT).isShown)
             assertEquals(savedIds, activity.store.sites().map(Site::id))
         } finally {
             controller.pause().stop().destroy()
@@ -292,7 +292,7 @@ class MapEditingTest {
                 accuracy = 8f
                 elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
             })
-            root.icon(MapIcon.LOCATION).performClick()
+            root.icon(FieldIcon.LOCATION).performClick()
             layout(root)
             val point = Coordinate(59.0, 33.0)
             layout(root)
@@ -309,20 +309,20 @@ class MapEditingTest {
             assertTrue(map.footerInset > 0)
             assertEquals(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT,
                 activity.packageManager.getActivityInfo(activity.componentName, 0).screenOrientation)
-            assertTrue(root.icon(MapIcon.LAYERS).elevation > 0f)
+            assertTrue(root.icon(FieldIcon.LAYERS).elevation > 0f)
             assertTrue(android.graphics.Color.alpha(Palette.floatingSurface) in 1..254)
 
-            root.icon(MapIcon.POINT).performClick()
+            root.icon(FieldIcon.POINT).performClick()
             layout(root)
-            val confirm = root.icon(MapIcon.SET_POINT)
-            assertTrue(root.icon(MapIcon.CANCEL).left > confirm.left)
+            val confirm = root.icon(FieldIcon.SET_POINT)
+            assertTrue(root.icon(FieldIcon.CANCEL).left > confirm.left)
             tap(root, 70f, 200f)
             val preview = requireNotNull(map.pointPreview)
             assertTrue(root.text("${preview.display()} · Выс. —").isShown)
-            root.icon(MapIcon.CANCEL).performClick()
+            root.icon(FieldIcon.CANCEL).performClick()
 
-            root.icon(MapIcon.AREA).performClick()
-            root.icon(MapIcon.ADD_VERTEX).performClick()
+            root.icon(FieldIcon.AREA).performClick()
+            root.icon(FieldIcon.ADD_VERTEX).performClick()
             assertTrue(root.text("${point.display()} ±8 м · Выс. 123 м").isShown)
             assertTrue(root.descendants().filterIsInstance<TextView>().any { it.text.startsWith("Вершин 1 ·") })
         } finally {
@@ -366,7 +366,7 @@ class MapEditingTest {
         }
     }
 
-    private fun View.icon(icon: MapIcon) =
+    private fun View.icon(icon: FieldIcon) =
         descendants().filterIsInstance<android.widget.ImageButton>().first { it.contentDescription == icon.description }
 
     private fun View.text(value: String) = descendants().filterIsInstance<TextView>().first { it.text == value }

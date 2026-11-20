@@ -79,13 +79,46 @@ internal fun Context.fieldPrompt(
     dialog.show()
 }
 
-internal fun AlertDialog.showFieldSheet() {
+private fun AlertDialog.showFieldSheet() {
     show()
     window?.apply {
         setGravity(Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
         setLayout(minOf(context.resources.displayMetrics.widthPixels, context.dp(520)),
             WindowManager.LayoutParams.WRAP_CONTENT)
+        setBackgroundDrawable(android.graphics.drawable.GradientDrawable().apply {
+            setColor(Palette.white)
+            val top = context.dp(26).toFloat()
+            cornerRadii = floatArrayOf(top, top, top, top, 0f, 0f, 0f, 0f)
+        })
         addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
         setDimAmount(0.30f)
     }
+}
+
+
+internal fun Context.fieldworkSheet(
+    title: String, onCancel: (() -> Unit)? = null, populate: LinearLayout.(AlertDialog) -> Unit
+): AlertDialog {
+    val dialog = AlertDialog.Builder(this).create()
+    val body = vertical().apply {
+        setPadding(dp(16), dp(4), dp(16), dp(16))
+        populate(dialog)
+    }
+    val container = vertical().apply {
+        addView(horizontal().apply {
+            setPadding(dp(16), dp(10), dp(10), dp(6))
+            addView(label(title, 21f, Palette.ink, true).apply {
+                if (Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true
+            }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(8) })
+            addView(iconAction(FieldIcon.CLOSE) { dialog.cancel() }, dp(48), dp(48))
+        }, -1, -2)
+        addView(ScrollView(this@fieldworkSheet).apply {
+            addView(body)
+            clipToPadding = false
+        }, LinearLayout.LayoutParams(-1, -2, 1f))
+    }
+    if (onCancel != null) dialog.setOnCancelListener { onCancel() }
+    dialog.setView(container, 0, 0, 0, 0)
+    dialog.showFieldSheet()
+    return dialog
 }

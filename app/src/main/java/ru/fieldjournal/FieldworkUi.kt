@@ -92,7 +92,10 @@ internal fun MainActivity.showSitePreview(site: Site) {
     val trip = store.trips.active()
     val visit = store.trips.latestVisit(site.id)
     fieldworkSheet(site.title) { dialog ->
-        addView(label(objectType(site.type).title, 15f, Palette.green, true))
+        addView(label(site.symbol.title, 15f, Palette.green, true))
+        site.parentId?.let(store::site)?.let { parent ->
+            addView(action("В составе «${parent.title}»") { dialog.dismiss(); openSite(parent.id) }, -1, -2)
+        }
         addSpace(5)
         visit?.let { addView(label("Последнее посещение · ${dateLabel(it)}", 13f, Palette.muted)) }
         addView(label(latest?.let { "Последнее наблюдение · ${dateLabel(it.created)}" }
@@ -123,57 +126,40 @@ internal fun MainActivity.showSitePreview(site: Site) {
     }
 }
 
-internal fun MainActivity.showDrafts() {
+internal fun MainActivity.showDrafts(list: LinearLayout) {
     val drafts = store.drafts()
-    fieldworkSheet("Черновики") { dialog ->
-        if (drafts.isEmpty()) addView(label("Незавершённых записей и карточек нет", 14f, Palette.muted))
-        for (draft in drafts) {
-            val group = vertical().apply {
-                setPadding(dp(10), dp(8), dp(10), dp(8))
-                background = panel(Palette.paper, 14)
-            }
-            group.addView(label(draft.title, 16f, Palette.ink, true))
-            group.addView(label(if (draft.note == null) "Карточка объекта" else "Запись дневника", 13f, Palette.muted))
-            group.addSpace(5)
-            group.addView(horizontal().apply {
+    if (drafts.isEmpty()) empty(list, "Черновиков пока нет", "Незавершённые карточки и записи появятся здесь.")
+    for (draft in drafts) {
+        card(list, draft.title, if (draft.note == null) "Карточка объекта" else "Запись дневника") {
+            fieldworkSheet(draft.title) { dialog ->
                 addView(action("Продолжить", true) {
                     dialog.dismiss()
                     resumeDraft(draft)
-                }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(6) })
-                addView(action("Удалить") {
+                }, -1, -2)
+                addSpace(6)
+                addView(action("Удалить черновик") {
                     confirm("Удалить черновик?", "Сохранённые записи останутся в дневнике.") {
                         runCatching { store.discardDraft(draft) }.onSuccess {
                             dialog.dismiss()
                             refreshDiary()
-                            showDrafts()
                         }.onFailure { message("Не удалось удалить черновик") }
                     }
-                }, LinearLayout.LayoutParams(0, -2, 1f))
-            }, -1, -2)
-            addView(group, -1, -2)
-            addSpace(8)
+                }.apply { setTextColor(Palette.rust) }, -1, -2)
+            }
         }
     }
 }
 
-internal fun MainActivity.showTrips() {
+internal fun MainActivity.showTrips(list: LinearLayout) {
     val trips = store.trips.list()
-    fieldworkSheet("Выезды") { dialog ->
-        if (trips.none { it.endedAt == null }) {
-            addView(action("Начать выезд", true) {
-                dialog.dismiss()
-                promptTripName()
-            }, -1, -2)
-            addSpace(10)
-        }
-        for (trip in trips) {
-            val text = if (trip.endedAt == null) "${trip.title} · текущий" else trip.title
-            addView(action(text, primary = trip.endedAt == null) {
-                dialog.dismiss()
-                showTripDetails(trip.id)
-            }, -1, -2)
-            addSpace(6)
-        }
+    if (trips.none { it.endedAt == null }) {
+        list.addView(action("+ Выезд", true) { promptTripName() }, -1, -2)
+        list.addSpace(8)
+    }
+    if (trips.isEmpty()) empty(list, "Выездов пока нет", "Выезд объединяет записи, посещения и маршрут одной полевой работы.")
+    for (trip in trips) {
+        val status = if (trip.endedAt == null) "Текущий выезд" else "Завершён"
+        card(list, trip.title, "$status · ${dateLabel(trip.startedAt)}") { showTripDetails(trip.id) }
     }
 }
 
@@ -185,107 +171,102 @@ private fun MainActivity.promptTripName() {
         addView(action("Начать", true) {
             runCatching { store.trips.start(name.text.toString().take(120)) }.onSuccess { trip ->
                 dialog.dismiss()
-                selectTripTrack(trip.id)
                 showTripDetails(trip.id)
             }.onFailure { message(it.message ?: "Не удалось начать выезд") }
         }, -1, -2)
     }
 }
 
-internal fun MainActivity.showTripDetails(tripId: String) {
+internal fun MainActivity.showTripPage(list: LinearLayout, tripId: String) {
     val contents = runCatching { store.trips.contents(tripId) }.getOrElse {
-        message(it.message ?: "Не удалось открыть выезд")
+        empty(list, "Выезд не найден", "Вернитесь к списку выездов.")
+        list.addView(action("Все выезды") { closeTripDetails() }, -1, -2)
         return
     }
     val trip = contents.trip
+    list.addView(action("‹ Все выезды") { closeTripDetails() }, -1, -2)
+    list.addSpace(10)
+    list.addView(label(trip.title, 22f, Palette.pine, true))
+    list.addView(label("Начат · ${dateLabel(trip.startedAt)}", 13f, Palette.muted))
+    trip.endedAt?.let { list.addView(label("Завершён · ${dateLabel(it)}", 13f, Palette.muted)) }
+    list.addSpace(8)
+    list.addView(action("Записи выезда · ${contents.notes.size}") { showTripRecords(trip.id) }, -1, -2)
+    list.addSpace(6)
+    list.addView(action("+ Запись в выезд", true) { createNote(null, compact = true, tripId = trip.id) }, -1, -2)
+    list.addSpace(10)
     val stats = label("", 14f, Palette.muted)
-    var recordingButton: TextView? = null
-    var gpxButton: TextView? = null
-    val dialog = fieldworkSheet(trip.title) { sheet ->
-        addView(label(
-            if (trip.endedAt == null) "Начат · ${dateLabel(trip.startedAt)}"
-            else "Завершён · ${dateLabel(trip.endedAt)}", 13f, Palette.muted
-        ))
-        addSpace(4)
-        addView(stats)
-        addSpace(10)
-        if (trip.endedAt == null) {
-            val recording = action("Записать трек", true) {
-                if (TripRecording.tripId == trip.id) TripRecordingService.pause(this@showTripDetails)
-                else startTripRecording(trip.id)
-            }
-            recordingButton = recording
-            addView(recording, -1, -2)
-            addSpace(6)
-            addView(action("Новое наблюдение") {
-                sheet.dismiss()
-                createNote(null, compact = true, tripId = trip.id)
-            }, -1, -2)
-            addSpace(6)
-        }
-        if (showingTripTrack(trip.id)) {
-            addView(action("Скрыть маршрут") {
-                sheet.dismiss()
-                selectTripTrack(null)
-                showTripDetails(trip.id)
-            }, -1, -2)
-            addSpace(6)
-        }
-        addView(action("Показать на карте") {
-            sheet.dismiss()
-            showTripOnMap(trip.id)
-        }, -1, -2)
-        addSpace(6)
-        val gpx = action("Экспорт GPX") { sheet.dismiss(); exportTrip(trip.id, forQgis = false) }
-        gpxButton = gpx
-        addView(gpx, -1, -2)
-        addSpace(6)
-        addView(action("Комплект для QGIS") { sheet.dismiss(); exportTrip(trip.id, forQgis = true) }, -1, -2)
-        if (trip.endedAt == null) {
-            addSpace(8)
-            addView(action("Завершить выезд") {
-                confirm("Завершить выезд?", "Маршрут, посещения и записи будут доступны в истории выездов.") {
-                    runCatching { finishTrip(trip.id) }.onSuccess {
-                        sheet.dismiss()
-                        showTripDetails(trip.id)
-                    }.onFailure { message("Не удалось завершить выезд") }
-                }
-            }.apply { setTextColor(Palette.rust) }, -1, -2)
-        }
-        if (contents.notes.isNotEmpty()) {
-            addSpace(12)
-            addView(label("Наблюдения", 16f, Palette.pine, true))
-            addSpace(5)
-            for (note in contents.notes) {
-                addView(action(note.title) { sheet.dismiss(); openRelatedNote(note.id) }, -1, -2)
-                addSpace(4)
-            }
-        }
-        if (contents.sites.isNotEmpty()) {
-            addSpace(12)
-            addView(label("Посещённые объекты", 16f, Palette.pine, true))
-            addSpace(5)
-            for (site in contents.sites) {
-                addView(action(site.title) { sheet.dismiss(); openSite(site.id) }, -1, -2)
-                addSpace(4)
-            }
-        }
+    list.addView(stats)
+    list.addSpace(6)
+    val recorder = if (trip.endedAt == null) action("Записать трек") {
+        if (TripRecording.tripId == trip.id) TripRecordingService.pause(this)
+        else startTripRecording(trip.id)
+    } else null
+    recorder?.let { list.addView(it, -1, -2); list.addSpace(6) }
+    var hasRoute = contents.points.isNotEmpty()
+    val routeToggle = action("Показать маршрут") {
+        if (hasRoute && showingTripTrack(trip.id)) hideTripTrack(trip.id) else showTripOnMap(trip.id)
     }
+    list.addView(routeToggle, -1, -2)
+    if (contents.sites.isNotEmpty()) {
+        list.addSpace(10)
+        list.addView(label("Посещённые объекты", 17f, Palette.pine, true))
+        list.addSpace(6)
+        for (site in contents.sites) card(list, site.title, site.symbol.title) { openSite(site.id) }
+    }
+    if (trip.endedAt == null) {
+        list.addSpace(8)
+        list.addView(action("Завершить выезд") {
+            confirm("Завершить выезд?", "Маршрут, посещения и записи будут доступны в истории выездов.") {
+                runCatching { finishTrip(trip.id) }.onSuccess { refreshDiary() }
+                    .onFailure { message("Не удалось завершить выезд") }
+            }
+        }, -1, -2)
+    }
+    list.addSpace(8)
+    list.addView(action("Удалить выезд") {
+        confirm("Удалить выезд?", "Маршрут и отметки посещений будут удалены. Записи, объекты и фотографии останутся в дневнике.") {
+            runCatching { deleteTrip(trip.id) }.onSuccess { message("Выезд удалён") }
+                .onFailure { message("Не удалось удалить выезд") }
+        }
+    }.apply { setTextColor(Palette.rust) }, -1, -2)
     fun update(points: List<TrackPoint>) {
         val km = String.format(Locale.forLanguageTag("ru"), "%.2f", contents.copy(points = points).distanceMeters / 1000)
         val recording = TripRecording.tripId == trip.id
-        val route = if (recording) "Запись · $km км" else "Трек · $km км"
-        stats.text = "$route · ${points.size} точек\nОбъекты ${contents.sites.size} · Наблюдения ${contents.notes.size}"
-        recordingButton?.text = if (recording) "Пауза записи" else if (points.isEmpty()) "Записать трек" else "Продолжить запись"
-        gpxButton?.isEnabled = points.isNotEmpty()
+        hasRoute = points.isNotEmpty()
+        val showing = hasRoute && showingTripTrack(trip.id)
+        stats.text = if (recording) "Запись трека · $km км" else "Трек · $km км · ${points.size} точек"
+        recorder?.text = if (recording) "Пауза записи" else if (points.isEmpty()) "Записать трек" else "Продолжить запись"
+        routeToggle.text = when {
+            showing -> "Скрыть маршрут"
+            points.isNotEmpty() -> "Показать маршрут"
+            else -> "Показать объекты на карте"
+        }
+        routeToggle.isEnabled = showing || points.isNotEmpty() || contents.sites.isNotEmpty()
     }
     update(contents.points)
-    watchTripSheet(dialog) {
-        if (dialog.isShowing) update(store.trips.points(trip.id))
+    watchTripPage { update(store.trips.points(tripId)) }
+}
+
+internal fun MainActivity.chooseTripExport() {
+    val trips = store.trips.list()
+    fieldworkSheet("Экспорт выезда") { dialog ->
+        if (trips.isEmpty()) addView(label("В дневнике пока нет выездов", 14f, Palette.muted))
+        for (trip in trips) card(this, trip.title, dateLabel(trip.startedAt)) {
+            dialog.dismiss()
+            fieldworkSheet(trip.title) { options ->
+                addView(action("Маршрут GPX") { options.dismiss(); exportTrip(trip.id, forQgis = false) }
+                    .apply { isEnabled = store.trips.points(trip.id).isNotEmpty() }, -1, -2)
+                addSpace(6)
+                addView(action("Комплект для QGIS", true) {
+                    options.dismiss()
+                    exportTrip(trip.id, forQgis = true)
+                }, -1, -2)
+            }
+        }
     }
 }
 
-private fun MainActivity.fieldworkSheet(title: String, populate: LinearLayout.(AlertDialog) -> Unit): AlertDialog {
+internal fun MainActivity.fieldworkSheet(title: String, populate: LinearLayout.(AlertDialog) -> Unit): AlertDialog {
     val dialog = AlertDialog.Builder(this).create()
     val body = vertical().apply {
         setPadding(dp(16), dp(14), dp(16), dp(14))

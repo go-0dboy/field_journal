@@ -42,6 +42,14 @@ class MainActivity : Activity() {
     private enum class Tab(val title: String, val icon: NavIcon) {
         MAP("Карта", NavIcon.MAP), SITES("Объекты", NavIcon.PIN), NOTES("Дневник", NavIcon.NOTE), SETTINGS("Данные", NavIcon.DATA)
     }
+    private enum class DiaryPage(val title: String, val icon: NavIcon) {
+        RECORDS("Записи", NavIcon.NOTE), TRIPS("Выезды", NavIcon.TRIP), DRAFTS("Черновики", NavIcon.DRAFT)
+    }
+    private var diaryPage = DiaryPage.RECORDS
+    private var diaryTripId: String? = null
+    private var filterTripNotes: String? = null
+    private var drawingParentId: String? = null
+    private var hiddenTripId: String? = null
     private enum class DrawMode { NONE, POINT, AREA, MOVE_POINT, MOVE_AREA }
     private enum class LocationAction { CENTER_MAP, SELECT_POINT, READOUT }
 
@@ -131,11 +139,10 @@ class MainActivity : Activity() {
     private var trackTripId: String? = null
     private var pendingTripRecording: String? = null
     private var pendingTripExport: String? = null
-    private var tripSheet: AlertDialog? = null
-    private var refreshTripSheet: (() -> Unit)? = null
+    private var refreshTripDetails: (() -> Unit)? = null
     private val trackChanged: (String?) -> Unit = { problem ->
         refreshTripTrack()
-        refreshTripSheet?.invoke()
+        refreshTripDetails?.invoke()
         problem?.let(::message)
     }
 
@@ -186,6 +193,11 @@ class MainActivity : Activity() {
             pendingCamera = it.getString("pendingCamera")
             pendingMap = it.getString("pendingMap")?.let(MapLayer::valueOf)
             trackTripId = it.getString("trackTripId")
+            diaryPage = DiaryPage.valueOf(it.getString("diaryPage", DiaryPage.RECORDS.name))
+            diaryTripId = it.getString("diaryTripId")
+            filterTripNotes = it.getString("filterTripNotes")
+            drawingParentId = it.getString("drawingParentId")
+            hiddenTripId = it.getString("hiddenTripId")
             pendingTripRecording = it.getString("pendingTripRecording")
             pendingTripExport = it.getString("pendingTripExport")
         }
@@ -244,7 +256,12 @@ class MainActivity : Activity() {
         }
         root.requestApplyInsets()
         createMap()
-        if (savedInstanceState == null) trackTripId = store.trips.active()?.id
+        if (savedInstanceState == null) {
+            val preferences = getPreferences(MODE_PRIVATE)
+            hiddenTripId = preferences.getString("hiddenTrip", null)?.takeIf { store.trips.get(it) != null }
+            trackTripId = preferences.getString("shownTrip", null)?.takeIf { store.trips.get(it) != null }
+                ?: store.trips.active()?.id.takeUnless { hiddenTripId != null }
+        }
         savedInstanceState?.getFloat("historicalDivider", -1f)?.takeIf { it >= 0f }?.let { map.historicalDivider = it }
         (lastNonConfigurationInstance as? RetainedState)?.let { retained ->
             ioTask = retained.task
@@ -292,6 +309,11 @@ class MainActivity : Activity() {
         out.putString("pendingCamera", pendingCamera)
         out.putString("pendingMap", pendingMap?.name)
         out.putString("trackTripId", trackTripId)
+        out.putString("diaryPage", diaryPage.name)
+        out.putString("diaryTripId", diaryTripId)
+        out.putString("filterTripNotes", filterTripNotes)
+        out.putString("drawingParentId", drawingParentId)
+        out.putString("hiddenTripId", hiddenTripId)
         out.putString("pendingTripRecording", pendingTripRecording)
         out.putString("pendingTripExport", pendingTripExport)
         map.historicalDivider?.let { out.putFloat("historicalDivider", it) }
@@ -318,6 +340,7 @@ class MainActivity : Activity() {
         foreground = true
         TripRecording.observe(trackChanged)
         refreshTripTrack()
+        refreshTripDetails?.invoke()
         connectIo()
         showRasterChoice()
     }
@@ -325,7 +348,6 @@ class MainActivity : Activity() {
     override fun onStop() {
         foreground = false
         TripRecording.forget(trackChanged)
-        tripSheet?.dismiss()
         ioTask?.onReady = null
         progressDialog?.dismiss()
         progressDialog = null
@@ -360,6 +382,14 @@ class MainActivity : Activity() {
         when {
             editorId != null -> closeEditor()
             drawMode != DrawMode.NONE -> cancelDraw()
+            tab == Tab.NOTES && diaryPage == DiaryPage.TRIPS && diaryTripId != null -> {
+                diaryTripId = null
+                render()
+            }
+            tab == Tab.NOTES && filterTripNotes != null -> {
+                filterTripNotes = null
+                render()
+            }
             tab != Tab.MAP -> switch(Tab.MAP)
             else -> super.onBackPressed()
         }
@@ -383,6 +413,7 @@ class MainActivity : Activity() {
     private fun render() {
         rememberCatalogPosition()
         catalogView = null
+        refreshTripDetails = null
         editView = null
         content.removeAllViews()
         header.removeAllViews()
@@ -434,7 +465,10 @@ class MainActivity : Activity() {
                 showSites()
             }
             Tab.NOTES -> {
-                setHeader("Дневник", action("+ Запись", true) { createNote(null) })
+                val newRecord = if (diaryPage == DiaryPage.RECORDS) action("+ Запись", true) {
+                    createNote(null, tripId = filterTripNotes ?: store.trips.active()?.id)
+                } else null
+                setHeader("Дневник", newRecord)
                 showNotes()
             }
             Tab.SETTINGS -> {
@@ -515,7 +549,15 @@ class MainActivity : Activity() {
         }
         mapArea = mapCaption(12f)
         mapComparisonStatus = mapCaption(12f).apply { text = "Старая слева · современная справа" }
-        mapTripStatus = mapCaption(12f).apply { text = "Записывается трек выезда" }
+        mapTripStatus = mapCaption(12f).apply {
+            setOnClickListener {
+                if (drawMode == DrawMode.NONE) {
+                    val hidden = hiddenTripId
+                    if (hidden != null) showTripOnMap(hidden)
+                    else TripRecording.tripId?.let(::showTripDetails)
+                }
+            }
+        }
         mapPanel = FrameLayout(this).apply {
             addView(map, FrameLayout.LayoutParams(-1, -1))
             statusBarScrim = View(this@MainActivity).apply { setBackgroundColor(Palette.floatingSurface) }
@@ -612,7 +654,8 @@ class MainActivity : Activity() {
         mapArea.visibility = if (drawingArea) View.VISIBLE else View.GONE
         if (drawingArea) mapArea.text = "Вершин ${vertices.size} · ${areaLabel(areaSquareMeters(vertices))}"
         mapComparisonStatus.visibility = if (map.historicalDivider != null && tiles.historicalEnabled) View.VISIBLE else View.GONE
-        mapTripStatus.visibility = if (TripRecording.tripId != null) View.VISIBLE else View.GONE
+        mapTripStatus.text = if (hiddenTripId != null) "Показать скрытый маршрут" else "Записывается трек выезда"
+        mapTripStatus.visibility = if (TripRecording.tripId != null || hiddenTripId != null) View.VISIBLE else View.GONE
     }
 
     private fun addVertex(point: Coordinate) {
@@ -768,6 +811,7 @@ class MainActivity : Activity() {
         vertices.clear()
         geometrySite = null
         geometryDraft = null
+        drawingParentId = null
         selectedPoint = null
         selectedMeasurement = null
         if (locationAction == LocationAction.SELECT_POINT) locationAction = null
@@ -803,14 +847,36 @@ class MainActivity : Activity() {
             openDraft(original.copy(site = updated, dirty = original.dirty || updated != site))
             return
         }
+        val parent = drawingParentId?.let(store::site)
+        if (parent != null && !parent.containsGeometry(points)) {
+            message("Разместите объект целиком внутри «${parent.title}»")
+            return
+        }
         chooseType("Условный знак объекта") { type ->
-            val site = Site(title = type.title, type = type.id, vertices = points,
+            val geometry = Site(title = type.title, type = type.id, vertices = points,
                 accuracy = fix?.accuracy, altitude = fix?.altitude, coordinateOrigin = origin, measuredAt = fix?.measuredAt)
+            val site = geometry.copy(parentId = parent?.id ?: store.groupCandidates(geometry).firstOrNull()?.id)
             resetDraw()
             previousTab = tab
-            openDraft(EditorDraft(site = site, isNew = true, tripId = store.trips.active()?.id))
+            openDraft(EditorDraft(site = site, isNew = true))
         }
     }
+
+    internal fun createInside(parent: Site, area: Boolean) {
+        confirmBeforeLeaving {
+            resetDraw()
+            detachEditor()
+            tab = Tab.MAP
+            filter = null
+            render()
+            drawingParentId = parent.id
+            map.show(parent)
+            beginDraw(if (area) DrawMode.AREA else DrawMode.POINT)
+            message("Новый объект внутри «${parent.title}»")
+        }
+    }
+
+    internal fun openGroupSite(id: String) = confirmBeforeLeaving { openSite(id) }
 
     internal fun editGeometry(site: Site) {
         val draft = editView?.snapshot() ?: EditorDraft(site = site)
@@ -1160,7 +1226,9 @@ class MainActivity : Activity() {
             addView(results, FrameLayout.LayoutParams(-1, -1))
             addView(emptyState, FrameLayout.LayoutParams(-1, -2))
         }
-        val catalog = store.sites().filter { filter == null || it.type == filter }
+        val sites = store.sites()
+        val titles = sites.associate { it.id to it.title }
+        val catalog = sites.filter { filter == null || it.type == filter }
         var matches = catalog
         val adapter = object : BaseAdapter() {
             override fun getCount() = matches.size
@@ -1168,7 +1236,8 @@ class MainActivity : Activity() {
             override fun getItemId(position: Int) = position.toLong()
             override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
                 return ((convertView as? CatalogRow) ?: CatalogRow(this@MainActivity)).apply {
-                    bind(getItem(position))
+                    val site = getItem(position)
+                    bind(site, site.parentId?.let(titles::get))
                 }
             }
         }
@@ -1178,7 +1247,7 @@ class MainActivity : Activity() {
             val input = search.trim()
             matches = if (input.isEmpty()) catalog else catalog.filter { site ->
                 listOf(site.title, objectType(site.type).title, site.period, site.culture,
-                    site.description, site.inventory, site.sources).any { it.contains(input, true) }
+                    site.description, site.inventory, site.sources, titles[site.parentId].orEmpty()).any { it.contains(input, true) }
             }
             adapter.notifyDataSetChanged()
             count.text = "Объекты · ${matches.size}"
@@ -1215,20 +1284,46 @@ class MainActivity : Activity() {
     private fun showNotes() {
         val loading = vertical().apply { setPadding(dp(14), dp(5), dp(14), dp(8)) }
         loading.addView(horizontal().apply {
-            addView(action("Выезды") { showTrips() }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(6) })
-            val count = store.draftCount()
-            addView(action(if (count > 0) "Черновики · $count" else "Черновики") { showDrafts() },
-                LinearLayout.LayoutParams(0, -2, 1f))
+            for (page in DiaryPage.entries) {
+                val count = if (page == DiaryPage.DRAFTS) store.draftCount() else 0
+                val title = if (count > 0) "${page.title} · $count" else page.title
+                addView(navigationAction(title, page.icon, page == diaryPage) {
+                    diaryPage = page
+                    diaryTripId = null
+                    filterTripNotes = null
+                    render()
+                }, LinearLayout.LayoutParams(0, -2, 1f))
+            }
         }, -1, -2)
         loading.addSpace(8)
+        content.addView(loading, -1, -1)
+        if (diaryPage != DiaryPage.RECORDS) {
+            val list = vertical()
+            loading.addView(ScrollView(this).apply { addView(list) }, LinearLayout.LayoutParams(-1, 0, 1f))
+            if (diaryPage == DiaryPage.DRAFTS) showDrafts(list)
+            else if (diaryTripId != null) showTripPage(list, requireNotNull(diaryTripId))
+            else showTrips(list)
+            return
+        }
+        val filter = filterTripNotes?.let(store.trips::get)
+        if (filter != null) {
+            loading.addView(action("${filter.title}  ×") {
+                filterTripNotes = null
+                render()
+            }, -1, -2)
+            loading.addSpace(8)
+        } else {
+            store.trips.active()?.let { trip ->
+                card(loading, trip.title, "Текущий выезд · новые записи относятся к нему") { showTripDetails(trip.id) }
+            }
+        }
         val records = vertical()
         val status = label("Загрузка записей…", 14f, Palette.muted)
         records.addView(status)
         loading.addView(records, LinearLayout.LayoutParams(-1, 0, 1f))
-        content.addView(loading, -1, -1)
         val journal = store
         diaryReads.execute {
-            val rows = runCatching { journal.noteSummaries() }
+            val rows = runCatching { journal.noteSummaries(tripId = filter?.id) }
             handler.post {
                 if (isDestroyed || loading.parent !== content) return@post
                 rows.onSuccess { notes ->
@@ -1266,21 +1361,51 @@ class MainActivity : Activity() {
         openDraft(draft)
     }
 
-    internal fun watchTripSheet(dialog: AlertDialog, refresh: () -> Unit) {
-        tripSheet?.dismiss()
-        tripSheet = dialog
-        refreshTripSheet = refresh
-        dialog.setOnDismissListener {
-            if (tripSheet === dialog) {
-                tripSheet = null
-                refreshTripSheet = null
-            }
-        }
+    internal fun showTripDetails(id: String) = confirmBeforeLeaving {
+        detachEditor()
+        tab = Tab.NOTES
+        diaryPage = DiaryPage.TRIPS
+        diaryTripId = id
+        filterTripNotes = null
+        render()
+    }
+
+    internal fun showTripRecords(id: String) {
+        diaryPage = DiaryPage.RECORDS
+        filterTripNotes = id
+        render()
+    }
+
+    internal fun closeTripDetails() {
+        diaryTripId = null
+        refreshDiary()
+    }
+
+    internal fun watchTripPage(refresh: () -> Unit) {
+        refreshTripDetails = refresh
     }
 
     internal fun selectTripTrack(id: String?) {
+        if (id != null) hiddenTripId = null
         trackTripId = id
+        getPreferences(MODE_PRIVATE).edit().putString("shownTrip", id).putString("hiddenTrip", hiddenTripId).apply()
         refreshTripTrack()
+    }
+
+    internal fun hideTripTrack(id: String) {
+        if (trackTripId != id) return
+        hiddenTripId = id
+        selectTripTrack(null)
+        refreshDiary()
+    }
+
+    internal fun deleteTrip(id: String) {
+        store.deleteTrip(id)
+        if (TripRecording.tripId == id) TripRecordingService.pause(this)
+        if (hiddenTripId == id) hiddenTripId = null
+        if (trackTripId == id || trackTripId == null) selectTripTrack(null)
+        else refreshTripTrack()
+        closeTripDetails()
     }
 
     private fun refreshTripTrack() {
@@ -1303,6 +1428,7 @@ class MainActivity : Activity() {
     }
 
     internal fun showTripOnMap(id: String) {
+        if (store.trips.get(id) == null) return message("Выезд не найден")
         val contents = store.trips.contents(id)
         val route = contents.points.map(TrackPoint::point)
         val points = route.ifEmpty { contents.sites.map(Site::anchor) }
@@ -1310,10 +1436,12 @@ class MainActivity : Activity() {
             message("В этом выезде пока нет точек маршрута и объектов")
             return
         }
-        selectTripTrack(id)
+        if (route.isNotEmpty()) selectTripTrack(id)
         tab = Tab.MAP
         render()
-        map.post { if (!isDestroyed && tab == Tab.MAP && trackTripId == id) map.showPoints(points) }
+        map.post {
+            if (!isDestroyed && tab == Tab.MAP && (route.isEmpty() || trackTripId == id)) map.showPoints(points)
+        }
     }
 
     internal fun showingTripTrack(id: String) = trackTripId == id
@@ -1326,7 +1454,7 @@ class MainActivity : Activity() {
             return
         }
         runCatching { TripRecordingService.start(this, id) }.onSuccess {
-            selectTripTrack(id)
+            if (hiddenTripId != id) selectTripTrack(id)
             val notifications = getPreferences(MODE_PRIVATE)
             if (android.os.Build.VERSION.SDK_INT >= 33 &&
                 checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED &&
@@ -1350,7 +1478,7 @@ class MainActivity : Activity() {
         else exportDocument(TRIP_GPX, "application/gpx+xml", "$name.gpx")
     }
 
-    private fun empty(list: LinearLayout, title: String, detail: String) {
+    internal fun empty(list: LinearLayout, title: String, detail: String) {
         val box = vertical().apply {
             background = panel(Palette.pale)
             setPadding(dp(18), dp(18), dp(18), dp(18))
@@ -1361,7 +1489,7 @@ class MainActivity : Activity() {
         list.addView(box, -1, -2)
     }
 
-    private fun card(list: LinearLayout, title: String, detail: String, icon: View? = null, click: () -> Unit) {
+    internal fun card(list: LinearLayout, title: String, detail: String, icon: View? = null, click: () -> Unit) {
         val row = horizontal().apply {
             background = panel(Palette.white, 13, Palette.border)
             setPadding(dp(12), dp(11), dp(12), dp(11))
@@ -1423,6 +1551,7 @@ class MainActivity : Activity() {
         card(list, "Импорт ZIP или GeoJSON", "Существующие записи с теми же ID сохраняются") { pickDocument(IMPORT, "*/*") }
         card(list, "Экспорт резервной копии", "ZIP · карточки, записи, выезды и вложения") { exportDocument(BACKUP, "application/zip", "field-journal-${shortDate()}.zip") }
         card(list, "Экспорт объектов GeoJSON", "WGS 84 · точки, контуры и поля карточек") { exportDocument(GEOJSON, "application/geo+json", "field-journal-${shortDate()}.geojson") }
+        card(list, "Экспорт выезда", "Маршрут GPX или комплект для QGIS с объектами и записями") { chooseTripExport() }
         list.addView(label("Подтверждённые изменения хранятся в локальной базе. Файлы карт хранятся отдельно от резервных копий.", 13f, Palette.muted))
     }
 

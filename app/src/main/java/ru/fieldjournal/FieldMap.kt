@@ -59,7 +59,10 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
     private data class VertexDrag(val index: Int, val offset: PointF, var point: Coordinate)
     private var drag: VertexDrag? = null
     var sites: List<Site> = emptyList()
-        set(value) { field = value; invalidate() }
+        set(value) {
+            field = value.sortedByDescending { if (it.area) areaSquareMeters(it.vertices) else 0.0 }
+            invalidate()
+        }
     var draft: List<Coordinate> = emptyList()
         set(value) { field = value; invalidate() }
     var locate: LocationFix? = null
@@ -175,10 +178,11 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
         override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
             if (editingGeometry) return false
             performClick()
-            val site = sites.firstOrNull {
-                val p = pixel(it.anchor)
-                hypot(p.x - e.x, p.y - e.y) <= 26 * scale ||
-                    it.area && inside(it.vertices, e.x, e.y) && it.holes.none { hole -> inside(hole, e.x, e.y) }
+            val site = sites.asReversed().firstOrNull {
+                val anchor = pixel(it.anchor)
+                hypot(anchor.x - e.x, anchor.y - e.y) <= 26 * scale
+            } ?: sites.asReversed().firstOrNull {
+                it.area && inside(it.vertices, e.x, e.y) && it.holes.none { hole -> inside(hole, e.x, e.y) }
             }
             onTap?.invoke(coordinateAt(e.x, e.y), site)
             return true
@@ -278,9 +282,11 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
             drawTiles(canvas, TilePass.PLACES, 19)
         } else referenceInfo?.let { drawTiles(canvas, TilePass.LOCAL_REFERENCES, it.maxZoom) }
         drawTrack(canvas)
-        for (site in sites.asReversed()) {
-            val type = objectType(site.type)
-            if (site.area) drawShape(canvas, listOf(site.vertices) + site.holes, type.color, true)
+        for (site in sites) {
+            if (site.area) drawShape(canvas, listOf(site.vertices) + site.holes, site.symbol.color, true)
+        }
+        for (site in sites) {
+            val type = site.symbol
             val p = pixel(site.anchor)
             if (p.x in -28f..width + 28f && p.y in -28f..height + 28f) {
                 drawSymbol(canvas, p.x, p.y, 16 * scale, type)

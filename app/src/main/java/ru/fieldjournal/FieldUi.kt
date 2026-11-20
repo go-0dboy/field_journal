@@ -165,6 +165,20 @@ internal fun drawSymbol(canvas: Canvas, x: Float, y: Float, radius: Float, type:
             line(-9f, 6f, -3f, -4f, 1f, 1f, 5f, -6f, 9f, 6f)
             line(-9f, 6f, 9f, 6f)
         }
+        "complex" -> {
+            line(-9f, 7f, -9f, -1f, -5f, -5f, -1f, -1f, -1f, 7f)
+            line(1f, 7f, 1f, -2f, 5f, -7f, 9f, -2f, 9f, 7f, -9f, 7f)
+        }
+        "church" -> {
+            line(-8f, 8f, -8f, 1f, 0f, -4f, 8f, 1f, 8f, 8f, -8f, 8f)
+            line(0f, -9f, 0f, -4f)
+            line(-3f, -7f, 3f, -7f)
+        }
+        "bell_tower" -> {
+            line(-7f, -3f, 0f, -9f, 7f, -3f)
+            line(-5f, -3f, -5f, 9f, 5f, 9f, 5f, -3f)
+            line(-2f, 3f, -2f, 1f, 0f, -1f, 2f, 1f, 2f, 3f, -2f, 3f)
+        }
         "building" -> {
             line(-8f, -3f, 0f, -8f, 8f, -3f, -8f, -3f)
             line(-6f, 0f, -6f, 7f)
@@ -181,7 +195,7 @@ internal fun drawSymbol(canvas: Canvas, x: Float, y: Float, radius: Float, type:
     canvas.restore()
 }
 
-internal enum class NavIcon { MAP, PIN, NOTE, DATA }
+internal enum class NavIcon { MAP, PIN, NOTE, DATA, TRIP, DRAFT }
 
 internal fun Context.navigationAction(title: String, icon: NavIcon, selected: Boolean, click: () -> Unit) =
     action(title, click = click).apply {
@@ -228,6 +242,16 @@ internal fun Context.navigationAction(title: String, icon: NavIcon, selected: Bo
                         canvas.drawLine(9f, 3f, 9f, 21f, pen)
                         canvas.drawLine(12f, 9f, 17f, 9f, pen)
                         canvas.drawLine(12f, 13f, 17f, 13f, pen)
+                    }
+                    NavIcon.TRIP -> {
+                        canvas.drawRoundRect(4f, 8f, 20f, 21f, 3f, 3f, pen)
+                        canvas.drawRoundRect(8f, 4f, 16f, 8f, 1f, 1f, pen)
+                        canvas.drawLine(4f, 14f, 20f, 14f, pen)
+                    }
+                    NavIcon.DRAFT -> path {
+                        moveTo(5f, 3f); lineTo(15f, 3f); lineTo(19f, 7f); lineTo(19f, 21f); lineTo(5f, 21f); close()
+                        moveTo(8f, 11f); lineTo(15f, 11f)
+                        moveTo(8f, 15f); lineTo(13f, 15f)
                     }
                     NavIcon.DATA -> {
                         canvas.drawRoundRect(3f, 5f, 21f, 20f, 2f, 2f, pen)
@@ -277,12 +301,12 @@ internal class CatalogRow(context: Context) : LinearLayout(context) {
         }, -1, -2)
     }
 
-    fun bind(site: Site) {
-        type = objectType(site.type)
+    fun bind(site: Site, parentTitle: String? = null) {
+        type = site.symbol
         symbol.invalidate()
         title.text = site.title
         detail.text = listOfNotNull(type.title, site.period.ifBlank { null },
-            if (site.area) areaLabel(areaSquareMeters(site.vertices)) else null).joinToString(" · ")
+            if (site.area) areaLabel(areaSquareMeters(site.vertices)) else null, parentTitle).joinToString(" · ")
     }
 }
 
@@ -511,6 +535,6 @@ internal class DiaryRow(context: Context) : LinearLayout(context) {
 
     fun bind(note: NoteSummary) {
         title.text = note.title
-        detail.text = listOfNotNull(dateLabel(note.created), note.siteTitle).joinToString(" · ")
+        detail.text = listOfNotNull(dateLabel(note.created), note.siteTitle, note.tripTitle).joinToString(" · ")
     }
 }

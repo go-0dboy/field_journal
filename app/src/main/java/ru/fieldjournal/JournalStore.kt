@@ -19,7 +19,7 @@ import java.util.zip.ZipOutputStream
 
 internal class JournalStore(
     context: Context, private val backupLimit: Long = MAX_ARCHIVE, private val geoJsonLimit: Long = MAX_JSON
-) : SQLiteOpenHelper(context, "field-journal.db", null, 3) {
+) : SQLiteOpenHelper(context, "field-journal.db", null, 4) {
     private val cache = context.cacheDir
     val attachments = File(context.filesDir, "attachments").apply { mkdirs() }
     private val snapshot = AtomicFile(File(context.filesDir, "journal-autosave.json"))
@@ -32,6 +32,7 @@ internal class JournalStore(
             "title TEXT, created INTEGER, site_id TEXT)")
         createNoteIndexes(db)
         createFieldworkTables(db)
+        createSiteGroups(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -44,7 +45,7 @@ internal class JournalStore(
                 db.query(table, arrayOf("id", "payload"), null, null, null, null, "rowid").use { cursor ->
                     while (cursor.moveToNext()) {
                         val json = JSONObject(cursor.getString(1))
-                        val values = summaryValues(table, json, includeTrip = false)
+                        val values = summaryValues(table, json, includeLinks = false)
                         db.update(table, values, "id = ?", arrayOf(cursor.getString(0)))
                     }
                 }
@@ -52,6 +53,12 @@ internal class JournalStore(
             createNoteIndexes(db)
         }
         if (oldVersion < 3) createFieldworkTables(db)
+        if (oldVersion < 4) createSiteGroups(db)
+    }
+
+    private fun createSiteGroups(db: SQLiteDatabase) {
+        db.execSQL("ALTER TABLE sites ADD COLUMN parent_id TEXT")
+        db.execSQL("CREATE INDEX sites_parent ON sites(parent_id)")
     }
 
     private fun createFieldworkTables(db: SQLiteDatabase) {
@@ -86,29 +93,31 @@ internal class JournalStore(
         "notes", arrayOf("payload"), "site_id = ?", arrayOf(siteId), null, null, "created DESC", "1"
     ).use { cursor -> if (cursor.moveToFirst()) Note.read(JSONObject(cursor.getString(0))) else null }
 
-    fun noteSummaries(siteId: String? = null): List<NoteSummary> {
-        val sql = "SELECT notes.id, notes.title, notes.created, sites.title FROM notes " +
-            "LEFT JOIN sites ON notes.site_id = sites.id " +
-            (if (siteId == null) "" else "WHERE notes.site_id = ? ") +
+    fun noteSummaries(siteId: String? = null, tripId: String? = null): List<NoteSummary> {
+        val where = listOfNotNull(siteId?.let { "notes.site_id = ?" }, tripId?.let { "notes.trip_id = ?" })
+        val sql = "SELECT notes.id, notes.title, notes.created, sites.title, trips.title FROM notes " +
+            "LEFT JOIN sites ON notes.site_id = sites.id LEFT JOIN trips ON notes.trip_id = trips.id " +
+            where.takeIf { it.isNotEmpty() }?.joinToString(" AND ", prefix = "WHERE ", postfix = " ").orEmpty() +
             "ORDER BY notes.created DESC"
-        return readableDatabase.rawQuery(sql, siteId?.let { arrayOf(it) }).use { cursor ->
+        return readableDatabase.rawQuery(sql, listOfNotNull(siteId, tripId).toTypedArray()).use { cursor ->
             buildList {
                 while (cursor.moveToNext()) {
-                    add(NoteSummary(cursor.getString(0), cursor.getString(1), cursor.getLong(2), cursor.getString(3)))
+                    add(NoteSummary(cursor.getString(0), cursor.getString(1), cursor.getLong(2), cursor.getString(3), cursor.getString(4)))
                 }
             }
         }
     }
 
-    private fun summaryValues(table: String, json: JSONObject, includeTrip: Boolean = true) = ContentValues().apply {
+    private fun summaryValues(table: String, json: JSONObject, includeLinks: Boolean = true) = ContentValues().apply {
         if (table == "sites") {
             val properties = json.getJSONObject("properties")
             put("title", properties.getString("title"))
+            if (includeLinks) put("parent_id", properties.optString("parent_id").takeIf { it.isNotBlank() })
         } else {
             put("title", json.getString("title"))
             put("created", json.getLong("created"))
             put("site_id", if (json.isNull("site_id")) null else json.getString("site_id"))
-            if (includeTrip) put("trip_id", json.optString("trip_id").takeIf(attachmentId::matches))
+            if (includeLinks) put("trip_id", json.optString("trip_id").takeIf(attachmentId::matches))
         }
     }
 
@@ -125,6 +134,18 @@ internal class JournalStore(
         }
 
     fun site(id: String) = record("sites", id)?.let { Site.read(it, withAttachments = true, validate = false) }
+    fun groupCandidates(value: Site) = sites().filter { candidate ->
+        candidate.id != value.id && candidate.containsGeometry(value.vertices, value.holes)
+    }.sortedBy { areaSquareMeters(it.vertices) }
+
+    fun children(id: String): List<Site> = readableDatabase.query(
+        "sites", arrayOf("payload"), "parent_id = ?", arrayOf(id), null, null, "updated DESC"
+    ).use { cursor ->
+        buildList {
+            while (cursor.moveToNext()) add(Site.read(JSONObject(cursor.getString(0)), withAttachments = true, validate = false))
+        }
+    }
+
     fun note(id: String) = record("notes", id)?.let(Note::read)
 
     fun drafts() = readRows("editor_drafts", EditorDraft::read)
@@ -157,7 +178,9 @@ internal class JournalStore(
                 draft.tripId?.let { trips.visit(db, it, site.id, timestamp) }
             }
             draft.note?.let { note ->
-                writeNote(db, note.copy(title = note.title.ifBlank { "Полевое наблюдение" }, updated = timestamp), draft.removed)
+                val tripId = note.tripId?.takeIf { trips.get(it) != null }
+                writeNote(db, note.copy(title = note.title.ifBlank { "Полевое наблюдение" }, updated = timestamp,
+                    tripId = tripId), draft.removed)
             }
             db.delete("editor_drafts", "id = ?", arrayOf(draft.id))
             db.setTransactionSuccessful()
@@ -175,6 +198,14 @@ internal class JournalStore(
     }
 
     private fun writeSite(db: SQLiteDatabase, site: Site, removed: Set<String>) {
+        site.parentId?.let { parentId ->
+            require(parentId != site.id && this.site(parentId)?.containsGeometry(site.vertices, site.holes) == true) {
+                "Объект должен целиком лежать в границах выбранной области"
+            }
+        }
+        require(children(site.id).all { site.containsGeometry(it.vertices, it.holes) }) {
+            "Новая граница оставит вложенные объекты снаружи"
+        }
         val previous = site(site.id)?.attachments.orEmpty()
         val files = (site.attachments + previous).filterNot { it.id in removed }.distinctBy(Attachment::id)
         val saved = site.copy(attachments = files)
@@ -196,9 +227,45 @@ internal class JournalStore(
 
     @Synchronized fun deleteSite(id: String) {
         val files = site(id)?.attachments.orEmpty()
-        writableDatabase.delete("sites", "id = ?", arrayOf(id))
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            children(id).forEach { child ->
+                val detached = child.copy(parentId = null)
+                write(db, "sites", child.id, child.updated, detached.feature(), SQLiteDatabase.CONFLICT_REPLACE)
+            }
+            drafts().filter { it.site?.parentId == id }.forEach { draft ->
+                saveDraft(draft.copy(site = draft.site?.copy(parentId = null)))
+            }
+            db.delete("sites", "id = ?", arrayOf(id))
+            db.delete("trip_sites", "site_id = ?", arrayOf(id))
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
         scheduleSnapshot()
         removeUnreferenced(files.map(Attachment::id).toSet())
+    }
+
+    @Synchronized fun deleteTrip(id: String) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            for (note in notesForTrip(id)) writeNote(db, note.copy(tripId = null), emptySet())
+            for (draft in drafts()) {
+                if (draft.note?.tripId == id || draft.tripId == id) {
+                    saveDraft(draft.copy(note = draft.note?.copy(tripId = draft.note.tripId?.takeUnless { it == id }),
+                        tripId = draft.tripId?.takeUnless { it == id }))
+                }
+            }
+            db.delete("track_points", "trip_id = ?", arrayOf(id))
+            db.delete("trip_sites", "trip_id = ?", arrayOf(id))
+            db.delete("trips", "id = ?", arrayOf(id))
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        scheduleSnapshot()
     }
 
     @Synchronized fun deleteNote(id: String) {
@@ -493,7 +560,7 @@ internal class JournalStore(
     }
 }
 
-internal data class NoteSummary(val id: String, val title: String, val created: Long, val siteTitle: String?)
+internal data class NoteSummary(val id: String, val title: String, val created: Long, val siteTitle: String?, val tripTitle: String? = null)
 
 internal data class ImportResult(val sites: Int, val notes: Int, val skipped: Int, val trips: Int = 0)
 

@@ -81,6 +81,10 @@ internal class JournalEditor(
         private set
     private var type = site?.type
     private var linkedSite = note?.siteId
+    private var linkedTrip = note?.tripId?.takeIf { activity.store.trips.get(it) != null }
+    private var parentId = site?.parentId
+    private var customColor = site?.customColor
+    private var lookingUpPlace = false
     private var timestamp = note?.created
     private var attachments = site?.attachments ?: note?.attachments.orEmpty()
     private val removedAttachments = draft.removed.toMutableSet()
@@ -159,7 +163,8 @@ internal class JournalEditor(
         val typeRow = activity.horizontal()
         fun typeControl() {
             typeRow.removeAllViews()
-            val selected = objectType(type.orEmpty())
+            val base = objectType(type.orEmpty())
+            val selected = customColor?.let { base.copy(color = it) } ?: base
             typeRow.addView(SymbolView(activity, selected), activity.dp(40), activity.dp(40))
             typeRow.addView(activity.action(selected.title) {
                 activity.chooseType("Условный знак объекта") { picked ->
@@ -194,10 +199,33 @@ internal class JournalEditor(
             }
         }
         info.addView(actions, -1, -2)
+        info.addSpace(5)
+        info.addView(activity.action("Цвет на карте") {
+            val colors = listOf("Цвет знака" to null, "Синий" to 0xff356295.toInt(),
+                "Бирюзовый" to 0xff23746f.toInt(), "Зелёный" to 0xff48764b.toInt(),
+                "Кирпичный" to 0xffa4512f.toInt(), "Фиолетовый" to 0xff765287.toInt(),
+                "Охра" to 0xff8a641f.toInt())
+            activity.fieldworkSheet("Цвет на карте") { sheet ->
+                for ((name, color) in colors) {
+                    val symbol = objectType(type.orEmpty()).let { if (color == null) it else it.copy(color = color) }
+                    activity.card(this, name, if (customColor == color) "Выбран" else symbol.title,
+                        SymbolView(activity, symbol)) {
+                        customColor = color
+                        typeControl()
+                        changed()
+                        sheet.dismiss()
+                    }
+                }
+            }
+        }, -1, -2)
         body.addView(info, -1, -2)
         section("Описание")
         field("title", "Название", value.title)
+        body.addView(activity.action("Название с карты") { findPlace(value, details = false) }, -1, -2)
+        body.addSpace(8)
         field("description", "Описание местности и объекта", value.description, 3)
+        body.addView(activity.action("Заполнить по открытым источникам") { findPlace(value, details = true) }, -1, -2)
+        addGroup(value)
         addMedia()
         section("Датировка и состояние")
         field("period", "Датировка / период", value.period)
@@ -223,6 +251,140 @@ internal class JournalEditor(
         body.addSpace(6)
     }
 
+    private fun addGroup(value: Site) {
+        section("Связанные объекты")
+        val parent = activity.label("", 14f, Palette.muted)
+        fun updateParent() {
+            parent.text = parentId?.let(activity.store::site)?.let { "В составе «${it.title}»" } ?: "Самостоятельный объект"
+        }
+        updateParent()
+        body.addView(parent)
+        body.addSpace(5)
+        body.addView(activity.action("Родительская область") {
+            val candidates = activity.store.groupCandidates(value)
+            activity.fieldworkSheet("Родительская область") { sheet ->
+                parentId?.let(activity.store::site)?.let { group ->
+                    addView(activity.action("Открыть «${group.title}»") {
+                        sheet.dismiss()
+                        activity.openGroupSite(group.id)
+                    }, -1, -2)
+                    addSpace(6)
+                }
+                if (candidates.isEmpty()) addView(activity.label("Подходящих областей нет", 14f, Palette.muted))
+                for (candidate in candidates) activity.card(this, candidate.title, candidate.symbol.title) {
+                    parentId = candidate.id
+                    updateParent()
+                    changed()
+                    sheet.dismiss()
+                }
+                if (parentId != null) addView(activity.action("Убрать связь") {
+                    parentId = null
+                    updateParent()
+                    changed()
+                    sheet.dismiss()
+                }, -1, -2)
+            }
+        }, -1, -2)
+        if (!value.area || isNew) return
+        body.addSpace(6)
+        val parts = activity.horizontal()
+        chip(parts, "+ Точка внутри") { activity.createInside(value, area = false) }
+        chip(parts, "+ Область внутри") { activity.createInside(value, area = true) }
+        body.addView(parts, -1, -2)
+        for (child in activity.store.children(value.id)) activity.card(body, child.title, child.symbol.title,
+            SymbolView(activity, child.symbol)) { activity.openGroupSite(child.id) }
+    }
+
+    private fun findPlace(value: Site, details: Boolean) {
+        if (lookingUpPlace) return
+        if (MapTiles.get(activity).offline) {
+            activity.message("Включите онлайн-режим для поиска по открытым источникам")
+            return
+        }
+        activity.confirm("Искать по координатам?", "Координаты объекта получит публичный сервер данных OpenStreetMap. Текст карточки и фотографии остаются на устройстве.") {
+            lookingUpPlace = true
+            activity.message("Поиск по открытым источникам…")
+            placeReads.execute {
+                val result = runCatching { OpenSources.lookup(value.anchor, details) }
+                activity.runOnUiThread {
+                    lookingUpPlace = false
+                    if (!isAttachedToWindow || activity.isFinishing) return@runOnUiThread
+                    result.onSuccess { place ->
+                        if (place == null) activity.message("Именованный объект рядом с точкой не найден")
+                        else offerPlace(place, details)
+                    }.onFailure { activity.message("Источники недоступны. Попробуйте позже.") }
+                }
+            }
+        }
+    }
+
+    private fun offerPlace(place: PublicPlace, details: Boolean) {
+        val suggestions = linkedMapOf("title" to ("Название" to place.name))
+        if (details) {
+            suggestions["description"] = "Описание" to place.description
+            suggestions["period"] = "Датировка" to place.period
+            suggestions["inventory"] = "Реестровый номер" to place.inventory
+        }
+        activity.fieldworkSheet("Данные открытых источников") { sheet ->
+            addView(activity.label("Возможное совпадение. Сверьте объект перед заполнением. © OpenStreetMap contributors",
+                13f, Palette.muted))
+            addSpace(8)
+            val selected = linkedMapOf<String, CheckBox>()
+            for ((key, suggestion) in suggestions) {
+                val (label, proposed) = suggestion
+                if (proposed.isBlank()) continue
+                val input = text(key)
+                val control = CheckBox(activity).apply {
+                    text = "$label · $proposed"
+                    isChecked = input.isBlank() ||
+                        (key == "title" && input == objectType(type.orEmpty()).title)
+                    minHeight = activity.dp(48)
+                }
+                selected[key] = control
+                addView(control, -1, -2)
+            }
+            for (link in place.links) {
+                addView(activity.action(android.net.Uri.parse(link).host.orEmpty()) { activity.openLink(link) }, -1, -2)
+                addSpace(4)
+            }
+            addView(activity.action("Применить выбранное", true) {
+                val updates = selected.filterValues { it.isChecked }.keys
+                if (updates.isEmpty()) {
+                    sheet.dismiss()
+                    return@action
+                }
+                for (key in updates) inputs[key]?.setText(suggestions.getValue(key).second)
+                inputs["sources"]?.setText((text("sources").lineSequence().filter(String::isNotBlank).toList() +
+                    place.links).distinct().joinToString("\n"))
+                sheet.dismiss()
+                activity.persistEditorDraft()
+                activity.message("Данные добавлены в черновик")
+            }, -1, -2)
+        }
+    }
+
+    private fun tripLabel(): String = linkedTrip?.let(activity.store.trips::get)?.let { "Выезд · ${it.title}" }
+        ?: "Привязать к выезду"
+
+    private fun chooseTrip(button: TextView) {
+        val trips = activity.store.trips.list()
+        activity.fieldworkSheet("Выезд записи") { sheet ->
+            if (linkedTrip != null) addView(activity.action("Без выезда") {
+                linkedTrip = null
+                button.text = tripLabel()
+                changed()
+                sheet.dismiss()
+            }, -1, -2)
+            if (trips.isEmpty()) addView(activity.label("Создайте выезд на вкладке «Выезды»", 14f, Palette.muted))
+            for (trip in trips) activity.card(this, trip.title, dateLabel(trip.startedAt)) {
+                linkedTrip = trip.id
+                button.text = tripLabel()
+                changed()
+                sheet.dismiss()
+            }
+        }
+    }
+
     private fun noteDetails(value: Note, parent: LinearLayout) {
         parent.addView(activity.vertical().apply {
             background = activity.panel(Palette.pale, 15)
@@ -240,10 +402,10 @@ internal class JournalEditor(
     }
 
     private fun buildNote(value: Note) {
-        value.tripId?.let { activity.store.trips.get(it) }?.let { trip ->
-            body.addView(activity.label(trip.title, 13f, Palette.muted, true))
-            body.addSpace(5)
-        }
+        body.addView(activity.action(tripLabel()) { }.apply {
+            setOnClickListener { chooseTrip(this) }
+        }, -1, -2)
+        body.addSpace(6)
         if (draft.compact) {
             val context = listOfNotNull(
                 value.siteId?.let(activity.store::site)?.title,
@@ -404,11 +566,11 @@ internal class JournalEditor(
                 period = text("period"), culture = text("culture"), condition = text("condition"),
                 inventory = text("inventory"), author = text("author"), confidence = text("confidence"),
                 context = text("context"), sources = text("sources"), attachments = attachments,
-                uncertainFields = uncertain.toSet())
+                uncertainFields = uncertain.toSet(), parentId = parentId, customColor = customColor)
         },
         note = note?.let {
             it.copy(title = text("title"), body = text("body"), author = text("author"), weather = text("weather"),
-                siteId = linkedSite, created = timestamp ?: it.created, attachments = attachments)
+                siteId = linkedSite, tripId = linkedTrip, created = timestamp ?: it.created, attachments = attachments)
         },
         isNew = isNew, dirty = hasUnsavedChanges, removed = removedAttachments.toSet(), staged = stagedAttachments.toSet(),
         compact = draft.compact, tripId = draft.tripId
@@ -420,7 +582,8 @@ internal class JournalEditor(
         hasUnsavedChanges = false
     }.onFailure {
         android.util.Log.w("FieldJournal", "Could not save edited record", it)
-        activity.message("Не удалось сохранить. Правки остались в карточке")
+        activity.message(if (it is IllegalArgumentException) it.message ?: "Проверьте поля карточки"
+            else "Не удалось сохранить. Правки остались в карточке")
     }.isSuccess
 
     fun discardDraft(): Boolean = runCatching { activity.store.discardDraft(snapshot()) }.onSuccess {
@@ -429,6 +592,8 @@ internal class JournalEditor(
     }.onFailure { activity.message("Не удалось удалить черновик") }.isSuccess
 
 }
+
+private val placeReads = java.util.concurrent.Executors.newSingleThreadExecutor()
 
 internal fun EditText.watch(onChange: (String) -> Unit) {
     addTextChangedListener(object : TextWatcher {

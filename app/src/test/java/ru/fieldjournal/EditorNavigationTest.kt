@@ -242,6 +242,7 @@ class EditorNavigationTest {
             val root = reopened.window.decorView
             root.text("Дневник").performClick()
             root.text("Черновики · 1").performClick()
+            (root.text("Полевое наблюдение").parent.parent as View).performClick()
             ShadowAlertDialog.getLatestAlertDialog().window!!.decorView.text("Продолжить").performClick()
             assertEquals("Северная граница проверена", root.input("Короткая заметка").text.toString())
             root.text(photo.name)
@@ -258,6 +259,38 @@ class EditorNavigationTest {
         } finally {
             activity.store.trips.finish(trip.id)
             second.pause().stop().destroy()
+        }
+    }
+
+    @Test fun diaryShowsTripAsATabAndRestoresHiddenRouteFromMap() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        val activity = controller.get()
+        val store = activity.store
+        store.trips.active()?.let { store.trips.finish(it.id) }
+        val trip = store.trips.start("Монастырь")
+        try {
+            val point = Coordinate(59.0, 33.0)
+            store.save(Note(title = "Обход стен", tripId = trip.id))
+            assertTrue(store.trips.append(trip.id, TrackPoint(point, trip.startedAt, 3.0, null, 0)))
+            val root = activity.window.decorView
+            root.text("Дневник").performClick()
+            root.text("Записи")
+            root.text("Выезды").performClick()
+            assertTrue(root.descendants().filterIsInstance<TextView>().any { it.text.startsWith("Черновики") })
+            (root.text(trip.title).parent.parent as View).performClick()
+            root.text("Записи выезда · 1")
+            assertTrue(root.descendants().filterIsInstance<TextView>().none { it.text == "Комплект для QGIS" })
+            root.text("Показать маршрут").performClick()
+            root.text("Дневник").performClick()
+            root.text("Скрыть маршрут").performClick()
+            root.text("Показать маршрут")
+            root.text("Карта").performClick()
+            root.text("Показать скрытый маршрут").performClick()
+            assertTrue(activity.showingTripTrack(trip.id))
+            assertFalse(root.text("Записывается трек выезда").isShown)
+        } finally {
+            activity.deleteTrip(trip.id)
+            controller.pause().stop().destroy()
         }
     }
 

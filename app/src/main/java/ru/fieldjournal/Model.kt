@@ -36,6 +36,9 @@ internal val objectTypes = listOf(
     ObjectType("find", "Место находки", 0xff8a641f.toInt()),
     ObjectType("excavation", "Раскоп / шурф", 0xff48764b.toInt()),
     ObjectType("tract", "Историческое урочище", 0xff4e6744.toInt()),
+    ObjectType("complex", "Исторический комплекс", 0xff325668.toInt()),
+    ObjectType("church", "Храм", 0xff87516b.toInt()),
+    ObjectType("bell_tower", "Колокольня / звонница", 0xff326f73.toInt()),
     ObjectType("building", "Историческое сооружение", 0xff855746.toInt()),
     ObjectType("road", "Дорога / переправа", 0xff575c70.toInt()),
     ObjectType("other", "Другое / не определено", 0xff536358.toInt())
@@ -92,9 +95,12 @@ internal data class Site(
     val updated: Long = created,
     val coordinateOrigin: CoordinateOrigin? = null,
     val measuredAt: Long? = null,
-    val uncertainFields: Set<String> = emptySet()
+    val uncertainFields: Set<String> = emptySet(),
+    val parentId: String? = null,
+    val customColor: Int? = null
 ) {
     init { require(vertices.size == 1 || vertices.size >= 3) }
+    val symbol get() = objectType(type).let { customColor?.let { color -> it.copy(color = color) } ?: it }
     val area get() = vertices.size > 1
     val anchor get() = if (!area) vertices.first() else polygonCenter(vertices)
 
@@ -117,6 +123,8 @@ internal data class Site(
             .put("accuracy_m", accuracy ?: JSONObject.NULL).put("altitude_m", altitude ?: JSONObject.NULL)
             .put("attachments", JSONArray(attachments.map(Attachment::json)))
             .put("created", created).put("updated", updated)
+        parentId?.let { properties.put("parent_id", it) }
+        customColor?.let { properties.put("color", String.format(Locale.ROOT, "#%06X", it and 0xffffff)) }
         coordinateOrigin?.let { properties.put("coordinate_origin", it.id) }
         measuredAt?.let { properties.put("measured_at", it) }
         if (uncertainFields.isNotEmpty()) properties.put("uncertain_fields", JSONArray(uncertainFields.sorted()))
@@ -160,6 +168,9 @@ internal data class Site(
                 p.nullableDouble("altitude_m"), attachments, created, p.optLong("updated", created),
                 coordinateOrigin = CoordinateOrigin.read(p.optString("coordinate_origin")),
                 measuredAt = p.optLong("measured_at").takeIf { it > 0 },
+                parentId = p.optString("parent_id").takeIf { !p.isNull("parent_id") && it.isNotBlank() && it != id },
+                customColor = p.optString("color").takeIf { it.matches(Regex("#[0-9a-fA-F]{6}")) }
+                    ?.substring(1)?.toInt(16)?.or(0xff000000.toInt()),
                 uncertainFields = p.array("uncertain_fields").let { fields ->
                     (0 until fields.length()).map(fields::optString).filterTo(linkedSetOf()) { it in verifiableSiteFields }
                 }
@@ -324,6 +335,39 @@ internal fun holeError(rings: List<List<Coordinate>>): String? {
         }
     }
     return null
+}
+
+internal fun Site.containsGeometry(points: List<Coordinate>, innerRings: List<List<Coordinate>> = emptyList()): Boolean {
+    if (!area || points.isEmpty()) return false
+    val reference = vertices.first()
+    fun plane(point: Coordinate) = longitudeDelta(point.longitude, reference.longitude) to
+        (point.latitude - reference.latitude)
+    val boundaries = (listOf(vertices) + holes).map { it.map(::plane) }
+    val child = points.map(::plane)
+    fun contains(ring: List<Pair<Double, Double>>, point: Pair<Double, Double>): Boolean {
+        var inside = false
+        for (index in ring.indices) {
+            val a = ring[index]
+            val b = ring[(index + 1) % ring.size]
+            if (segmentsMeet(a, b, point, point)) return false
+            if ((a.second > point.second) != (b.second > point.second) &&
+                point.first < a.first + (point.second - a.second) * (b.first - a.first) / (b.second - a.second)) {
+                inside = !inside
+            }
+        }
+        return inside
+    }
+    if (!contains(boundaries.first(), child.first())) return false
+    val childEdges = if (child.size == 1) listOf(child.first() to child.first())
+        else child.indices.map { child[it] to child[(it + 1) % child.size] }
+    if (boundaries.any { ring -> ring.indices.any { i ->
+            childEdges.any { (a, b) -> segmentsMeet(ring[i], ring[(i + 1) % ring.size], a, b) }
+        } }) return false
+    return boundaries.drop(1).none { hole ->
+        contains(hole, child.first()) ||
+            (child.size > 1 && contains(child, hole.first()) &&
+                innerRings.none { contains(it.map(::plane), hole.first()) })
+    }
 }
 
 internal fun areaLabel(squareMeters: Double) = if (squareMeters >= 10000)

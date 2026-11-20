@@ -140,6 +140,64 @@ class StoreSmokeTest {
         controller.pause().stop().destroy()
     }
 
+    @Test fun groupKeepsSeparateColorsAndSymbolsThroughGeoJsonAndDetachesChildrenOnDelete() {
+        JournalStore(RuntimeEnvironment.getApplication()).use { store ->
+            fun polygon(south: Double, west: Double, north: Double, east: Double) = listOf(
+                Coordinate(south, west), Coordinate(south, east), Coordinate(north, east), Coordinate(north, west)
+            )
+            val complex = Site(title = "Монастырь", type = "complex", vertices = polygon(59.0, 33.0, 59.04, 33.04))
+            val church = Site(title = "Храм", type = "church", vertices = polygon(59.005, 33.005, 59.015, 33.015),
+                parentId = complex.id, customColor = 0xff23746f.toInt())
+            val bell = Site(title = "Звонница", type = "bell_tower", vertices = listOf(Coordinate(59.01, 33.01)))
+            store.save(complex)
+            store.save(church)
+            assertEquals(listOf(church.id, complex.id), store.groupCandidates(bell).map(Site::id))
+            val linkedBell = bell.copy(parentId = church.id)
+            store.save(linkedBell)
+            assertThrows(IllegalArgumentException::class.java) {
+                store.save(church.copy(vertices = polygon(59.002, 33.002, 59.008, 33.008)))
+            }
+            assertThrows(IllegalArgumentException::class.java) {
+                store.save(linkedBell.copy(vertices = listOf(Coordinate(59.03, 33.03))))
+            }
+            val json = ByteArrayOutputStream().also(store::exportGeoJson).toByteArray()
+            store.deleteSite(complex.id)
+            assertNull(store.site(church.id)?.parentId)
+            assertEquals(linkedBell, store.site(bell.id))
+            store.deleteSite(church.id)
+            store.deleteSite(bell.id)
+            assertEquals(ImportResult(3, 0, 0), store.importGeoJson(json.inputStream()))
+            assertEquals(church, store.children(complex.id).single())
+            assertEquals("bell_tower", store.children(church.id).single().symbol.id)
+            assertEquals(church.customColor, store.site(church.id)?.symbol?.color)
+        }
+    }
+
+    @Test fun deletingATripKeepsNotesDraftsSitesAndAttachments() {
+        JournalStore(RuntimeEnvironment.getApplication()).use { store ->
+            val trip = store.trips.start("Разведка")
+            val photo = store.addAttachment("photo".byteInputStream(), "Фото.jpg", "image/jpeg")
+            val site = Site(title = "Курган", vertices = listOf(Coordinate(59.0, 33.0)))
+            store.save(site)
+            val note = Note(title = "Осмотр", siteId = site.id, tripId = trip.id, attachments = listOf(photo))
+            store.save(note)
+            store.saveDraft(EditorDraft(note = note.copy(body = "Наблюдение"), dirty = true))
+            store.trips.visit(trip.id, site.id)
+            store.trips.append(trip.id, TrackPoint(site.anchor, trip.startedAt, 4.0, null, 0))
+
+            store.deleteTrip(trip.id)
+
+            assertNull(store.trips.get(trip.id))
+            assertTrue(store.trips.points(trip.id).isEmpty())
+            assertNull(store.trips.latestVisit(site.id))
+            assertEquals(note.copy(tripId = null), store.note(note.id))
+            assertEquals(note.copy(tripId = null, body = "Наблюдение"), store.draft(note.id)?.note)
+            assertEquals(site, store.site(site.id))
+            assertEquals("photo", store.attachmentFile(photo.id).readText())
+            assertEquals(listOf(note.id), store.noteSummaries().map(NoteSummary::id))
+        }
+    }
+
     private fun acceptSave() {
         val decor = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog().window!!.decorView
         val matches = ArrayList<android.view.View>()

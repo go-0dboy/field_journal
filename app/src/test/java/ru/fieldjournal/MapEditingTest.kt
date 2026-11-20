@@ -1,6 +1,8 @@
 package ru.fieldjournal
 
 import android.content.ClipboardManager
+import android.location.Location
+import android.location.LocationManager
 import android.os.Looper
 import android.os.SystemClock
 import android.view.MotionEvent
@@ -70,6 +72,7 @@ class MapEditingTest {
     }
 
     @Test fun coordinatesCopyTheCenterThenThePointSelectedByTap() {
+        MapTiles.get(org.robolectric.RuntimeEnvironment.getApplication()).coordinatesAtDevice = false
         val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
         try {
             val activity = controller.get()
@@ -126,6 +129,60 @@ class MapEditingTest {
             sheet.text("Подключить подписи").performClick()
             val request = shadowOf(activity).nextStartedActivityForResult
             assertEquals(android.content.Intent.ACTION_OPEN_DOCUMENT, request.intent.action)
+        } finally {
+            controller.pause().stop().destroy()
+        }
+    }
+
+    @Test fun movingTheMapDoesNotChangeDeviceCoordinatesOrTheGpsPointMeasurement() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        try {
+            val activity = controller.get()
+            val root = activity.window.decorView
+            val map = root.descendants().filterIsInstance<FieldMap>().single()
+            val savedIds = activity.store.sites().map(Site::id).toSet()
+            val point = Coordinate(59.0, 33.0)
+            val measuredAt = 1_700_000_000_000L
+            val manager = shadowOf(activity.getSystemService(LocationManager::class.java))
+            shadowOf(activity.application).grantPermissions(
+                android.Manifest.permission.ACCESS_FINE_LOCATION, android.Manifest.permission.ACCESS_COARSE_LOCATION
+            )
+            manager.setProviderEnabled(LocationManager.GPS_PROVIDER, true)
+            manager.setLastKnownLocation(LocationManager.GPS_PROVIDER, Location(LocationManager.GPS_PROVIDER).apply {
+                latitude = point.latitude
+                longitude = point.longitude
+                altitude = 123.0
+                accuracy = 8f
+                time = measuredAt
+                elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+            })
+            root.icon(MapIcon.LOCATION).performClick()
+            val other = Coordinate(60.0, 34.0)
+            map.moveTo(other)
+            assertTrue(root.text("${point.display()} ±8 м · Выс. 123 м").isShown)
+            val clipboard = activity.getSystemService(ClipboardManager::class.java)
+            root.icon(MapIcon.COORDINATES).performClick()
+            ShadowAlertDialog.getLatestAlertDialog().window!!.decorView.text("Скопировать").performClick()
+            assertEquals(point.display(), clipboard.primaryClip?.getItemAt(0)?.text.toString())
+
+            root.icon(MapIcon.COORDINATES).performClick()
+            ShadowAlertDialog.getLatestAlertDialog().window!!.decorView.text("Центр карты").performClick()
+            assertTrue(root.text("${other.display()} · Выс. —").isShown)
+            ShadowAlertDialog.getLatestAlertDialog().window!!.decorView.text("Скопировать").performClick()
+            assertEquals(other.display(), clipboard.primaryClip?.getItemAt(0)?.text.toString())
+
+            root.icon(MapIcon.POINT).performClick()
+            root.icon(MapIcon.GPS_POINT).performClick()
+            assertEquals(point, map.pointPreview)
+            root.icon(MapIcon.SET_POINT).performClick()
+            chooseFirstType()
+            confirmSave(activity)
+            val saved = activity.store.sites().single { it.id !in savedIds }
+            assertEquals(point, saved.anchor)
+            assertEquals(CoordinateOrigin.DEVICE, saved.coordinateOrigin)
+            assertEquals(measuredAt, saved.measuredAt)
+            assertEquals(123.0, saved.altitude)
+            assertEquals(8.0, saved.accuracy)
         } finally {
             controller.pause().stop().destroy()
         }

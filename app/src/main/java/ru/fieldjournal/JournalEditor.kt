@@ -6,6 +6,7 @@ import android.content.DialogInterface
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.View
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -21,17 +22,25 @@ internal data class EditorDraft(
     val isNew: Boolean = false,
     val dirty: Boolean = isNew,
     val removed: Set<String> = emptySet(),
-    val staged: Set<String> = emptySet()
+    val staged: Set<String> = emptySet(),
+    val compact: Boolean = false,
+    val tripId: String? = null
 ) {
     init {
         require((site == null) != (note == null))
     }
 
     val id get() = site?.id ?: requireNotNull(note).id
+    val attachmentIds get() = (site?.attachments ?: note?.attachments.orEmpty()).map(Attachment::id)
+    val title get() = (site?.title ?: note?.title).orEmpty().ifBlank {
+        if (site != null) "Объект без названия" else "Полевое наблюдение"
+    }
 
     fun json() = org.json.JSONObject().put("site", site?.feature()).put("note", note?.json())
         .put("new", isNew).put("dirty", dirty)
         .put("removed", org.json.JSONArray(removed)).put("staged", org.json.JSONArray(staged))
+        .put("compact", compact)
+        .apply { tripId?.let { put("trip_id", it) } }
 
     companion object {
         fun read(value: org.json.JSONObject): EditorDraft {
@@ -47,7 +56,9 @@ internal data class EditorDraft(
                 isNew = value.getBoolean("new"),
                 dirty = value.getBoolean("dirty"),
                 removed = ids("removed"),
-                staged = ids("staged")
+                staged = ids("staged"),
+                compact = value.optBoolean("compact"),
+                tripId = value.optString("trip_id").takeIf(attachmentId::matches)
             )
         }
     }
@@ -74,6 +85,7 @@ internal class JournalEditor(
     private var attachments = site?.attachments ?: note?.attachments.orEmpty()
     private val removedAttachments = draft.removed.toMutableSet()
     private val stagedAttachments = draft.staged.toMutableSet()
+    private val uncertain = site?.uncertainFields.orEmpty().toMutableSet()
 
     init {
         body.setPadding(activity.dp(16), activity.dp(10), activity.dp(16), activity.dp(20))
@@ -111,15 +123,30 @@ internal class JournalEditor(
         if (position > 0) scroll.post { scroll.scrollTo(0, position) }
     }
 
-    private fun field(key: String, label: String, value: String, lines: Int = 1) {
+    private fun field(key: String, label: String, value: String, lines: Int = 1, parent: LinearLayout = body) {
         val titled = activity.label(label, 13f, Palette.muted, true)
         val input = activity.edit(label, value, lines)
         input.id = View.generateViewId()
         titled.labelFor = input.id
-        body.addView(titled)
-        body.addSpace(3)
-        body.addView(input, -1, -2)
-        body.addSpace(9)
+        if (site != null && key in verifiableSiteFields) {
+            parent.addView(activity.horizontal().apply {
+                addView(titled, LinearLayout.LayoutParams(0, -2, 1f))
+                addView(CheckBox(activity).apply {
+                    text = "Проверить"
+                    textSize = 12f
+                    contentDescription = "$label · требует проверки"
+                    minimumHeight = activity.dp(48)
+                    isChecked = key in uncertain
+                    setOnCheckedChangeListener { _, checked ->
+                        if (checked) uncertain.add(key) else uncertain.remove(key)
+                        changed()
+                    }
+                }, -2, -2)
+            }, -1, -2)
+        } else parent.addView(titled)
+        parent.addSpace(3)
+        parent.addView(input, -1, -2)
+        parent.addSpace(9)
         inputs[key] = input
         input.watch { changed() }
     }
@@ -147,6 +174,8 @@ internal class JournalEditor(
         info.addSpace(8)
         val details = buildList {
             add(value.anchor.display() + "  WGS 84")
+            value.coordinateOrigin?.let { add(it.title) }
+            value.measuredAt?.let { add("Замер · ${dateLabel(it)}") }
             if (value.area) {
                 val area = areaSquareMeters(value.vertices) - value.holes.sumOf(::areaSquareMeters)
                 add("${value.vertices.size} вершин · ${areaLabel(area.coerceAtLeast(0.0))}")
@@ -194,27 +223,53 @@ internal class JournalEditor(
         body.addSpace(6)
     }
 
-    private fun buildNote(value: Note) {
-        val row = activity.vertical().apply {
+    private fun noteDetails(value: Note, parent: LinearLayout) {
+        parent.addView(activity.vertical().apply {
             background = activity.panel(Palette.pale, 15)
             setPadding(activity.dp(12), activity.dp(12), activity.dp(12), activity.dp(12))
+            addView(activity.action(dateLabel(value.created)) { }.apply {
+                setOnClickListener { pickDate(this) }
+            }, -1, -2)
+            addSpace(6)
+            addView(activity.action(linkTitle()) { }.apply {
+                setOnClickListener { chooseSite(this) }
+            }, -1, -2)
+        }, -1, -2)
+        parent.addSpace(8)
+        field("title", "Заголовок", value.title, parent = parent)
+    }
+
+    private fun buildNote(value: Note) {
+        value.tripId?.let { activity.store.trips.get(it) }?.let { trip ->
+            body.addView(activity.label(trip.title, 13f, Palette.muted, true))
+            body.addSpace(5)
         }
-        val time = activity.action(dateLabel(value.created)) { }.apply {
-            setOnClickListener { pickDate(this) }
+        if (draft.compact) {
+            val context = listOfNotNull(
+                value.siteId?.let(activity.store::site)?.title,
+                dateLabel(value.created)
+            ).joinToString(" · ")
+            body.addView(activity.label(context, 14f, Palette.pine, true))
+            body.addSpace(8)
+            field("body", "Короткая заметка", value.body, 3)
+            addMedia()
+            body.addSpace(12)
+            val details = activity.vertical().apply { visibility = View.GONE }
+            body.addView(activity.action("Дополнительные поля") {
+                details.visibility = if (details.visibility == View.GONE) View.VISIBLE else View.GONE
+            }, -1, -2)
+            body.addSpace(8)
+            noteDetails(value, details)
+            field("author", "Автор / группа", value.author, parent = details)
+            field("weather", "Погода и условия работ", value.weather, parent = details)
+            body.addView(details, -1, -2)
+        } else {
+            noteDetails(value, body)
+            field("body", "Маршрут, работы и наблюдения", value.body, 7)
+            field("author", "Автор / группа", value.author)
+            field("weather", "Погода и условия работ", value.weather)
+            addMedia()
         }
-        val link = activity.action(linkTitle()) { }.apply {
-            setOnClickListener { chooseSite(this) }
-        }
-        row.addView(time, -1, -2)
-        row.addSpace(6)
-        row.addView(link, -1, -2)
-        body.addView(row, -1, -2)
-        section("Наблюдение")
-        field("title", "Заголовок", value.title)
-        field("body", "Маршрут, работы и наблюдения", value.body, 7)
-        field("author", "Автор / группа", value.author)
-        field("weather", "Погода и условия работ", value.weather)
-        addMedia()
     }
 
     private fun pickDate(button: TextView) {
@@ -292,9 +347,19 @@ internal class JournalEditor(
         if (attachments.isEmpty()) {
             mediaList.addView(activity.label("Вложений пока нет", 13f, Palette.muted))
         }
+        val photos = attachments.filter { it.mime.startsWith("image/") }
         for (attachment in attachments) {
             val row = activity.horizontal()
-            row.addView(activity.action(attachment.name) { activity.openAttachment(attachment) }, LinearLayout.LayoutParams(0, -2, 1f))
+            val photoIndex = photos.indexOf(attachment)
+            val open = {
+                if (photoIndex >= 0) activity.openPhotoGallery(photos, photoIndex)
+                else activity.openAttachment(attachment)
+            }
+            if (photoIndex >= 0) {
+                row.addView(activity.photoThumbnail(attachment, open), LinearLayout.LayoutParams(activity.dp(58), activity.dp(58))
+                    .apply { marginEnd = activity.dp(7) })
+            }
+            row.addView(activity.action(attachment.name, click = open), LinearLayout.LayoutParams(0, -2, 1f))
             row.addView(activity.action("×", description = "Убрать ${attachment.name}") {
                 activity.confirm("Убрать вложение?", attachment.name) {
                     removedAttachments.add(attachment.id)
@@ -323,10 +388,12 @@ internal class JournalEditor(
         stagedAttachments.add(record.id)
         showMedia()
         changed()
+        activity.persistEditorDraft()
     }
 
     private fun changed() {
         hasUnsavedChanges = true
+        activity.scheduleDraftSave()
     }
 
     private fun text(key: String) = inputs[key]?.text?.toString().orEmpty()
@@ -336,41 +403,30 @@ internal class JournalEditor(
             it.copy(title = text("title"), type = type ?: it.type, description = text("description"),
                 period = text("period"), culture = text("culture"), condition = text("condition"),
                 inventory = text("inventory"), author = text("author"), confidence = text("confidence"),
-                context = text("context"), sources = text("sources"), attachments = attachments)
+                context = text("context"), sources = text("sources"), attachments = attachments,
+                uncertainFields = uncertain.toSet())
         },
         note = note?.let {
             it.copy(title = text("title"), body = text("body"), author = text("author"), weather = text("weather"),
                 siteId = linkedSite, created = timestamp ?: it.created, attachments = attachments)
         },
-        isNew = isNew, dirty = hasUnsavedChanges, removed = removedAttachments.toSet(), staged = stagedAttachments.toSet()
+        isNew = isNew, dirty = hasUnsavedChanges, removed = removedAttachments.toSet(), staged = stagedAttachments.toSet(),
+        compact = draft.compact, tripId = draft.tripId
     )
 
-    fun saveConfirmed(): Boolean {
-        val state = snapshot()
-        val now = System.currentTimeMillis()
-        return runCatching {
-            state.site?.let {
-                activity.store.save(it.copy(title = it.title.ifBlank { "Объект без названия" }, updated = now), state.removed)
-            }
-            state.note?.let {
-                activity.store.save(it.copy(title = it.title.ifBlank { "Полевое наблюдение" }, updated = now), state.removed)
-            }
-        }.onSuccess {
-            val kept = attachments.map(Attachment::id).toSet()
-            (stagedAttachments - kept).forEach { activity.store.attachmentFile(it).delete() }
-            stagedAttachments.clear()
-            removedAttachments.clear()
-            hasUnsavedChanges = false
-        }.onFailure {
-            android.util.Log.w("FieldJournal", "Could not save edited record", it)
-            activity.message("Не удалось сохранить. Правки остались в карточке")
-        }.isSuccess
-    }
-
-    fun discardDraft() {
-        stagedAttachments.forEach { activity.store.attachmentFile(it).delete() }
+    fun saveConfirmed(): Boolean = runCatching { activity.store.commitDraft(snapshot()) }.onSuccess {
         stagedAttachments.clear()
-    }
+        removedAttachments.clear()
+        hasUnsavedChanges = false
+    }.onFailure {
+        android.util.Log.w("FieldJournal", "Could not save edited record", it)
+        activity.message("Не удалось сохранить. Правки остались в карточке")
+    }.isSuccess
+
+    fun discardDraft(): Boolean = runCatching { activity.store.discardDraft(snapshot()) }.onSuccess {
+        stagedAttachments.clear()
+        hasUnsavedChanges = false
+    }.onFailure { activity.message("Не удалось удалить черновик") }.isSuccess
 
 }
 

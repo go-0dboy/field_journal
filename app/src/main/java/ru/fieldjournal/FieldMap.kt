@@ -40,6 +40,11 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
     var onMove: ((Coordinate, Double) -> Unit)? = null
     var onVertexTap: ((Int) -> Unit)? = null
     var onVertexMove: ((Int, Coordinate) -> Unit)? = null
+    var historicalDivider: Float? = null
+        set(value) { field = value?.coerceIn(0.04f, 0.96f); invalidate() }
+    private var movingDivider = false
+    var trackSegments: List<List<Coordinate>> = emptyList()
+        set(value) { field = value; invalidate() }
     var pointPreview: Coordinate? = null
         set(value) { field = value; invalidate() }
     var editingGeometry = false
@@ -47,6 +52,7 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
             if (field == value) return
             field = value
             drag = null
+            movingDivider = false
             gestures.setOnDoubleTapListener(if (value) null else gestureListener)
         }
 
@@ -104,14 +110,15 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
         invalidate()
     }
 
-    fun show(site: Site) {
-        val anchor = site.anchor
-        if (!site.area || width == 0 || height == 0) {
+    fun show(site: Site) = showPoints(site.vertices, site.anchor)
+
+    fun showPoints(points: List<Coordinate>, anchor: Coordinate = polygonCenter(points)) {
+        if (points.size == 1 || width == 0 || height == 0) {
             moveTo(anchor, 16.0)
             return
         }
-        val longitudeSpan = site.vertices.maxOf { abs(longitudeDelta(it.longitude, anchor.longitude)) } / 360 * 2
-        val latitudeSpan = site.vertices.maxOf { abs(mercator(it.latitude) - mercator(anchor.latitude)) } * 2
+        val longitudeSpan = points.maxOf { abs(longitudeDelta(it.longitude, anchor.longitude)) } / 360 * 2
+        val latitudeSpan = points.maxOf { abs(mercator(it.latitude) - mercator(anchor.latitude)) } * 2
         val factor = min(width * 0.7 / max(longitudeSpan, 1e-8), height * 0.65 / max(latitudeSpan, 1e-8))
         moveTo(anchor, log2(factor / (256 * scale)).coerceAtMost(19.0))
     }
@@ -195,6 +202,21 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
 
     @android.annotation.SuppressLint("ClickableViewAccessibility") // GestureDetector calls performClick for confirmed taps.
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        val split = historicalDivider
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            movingDivider = !editingGeometry && historyInfo != null && split != null &&
+                abs(event.x - width * split) <= 23 * scale
+        }
+        if (movingDivider) {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_MOVE, MotionEvent.ACTION_UP -> {
+                    historicalDivider = event.x / width.coerceAtLeast(1)
+                    if (event.actionMasked == MotionEvent.ACTION_UP) movingDivider = false
+                }
+                MotionEvent.ACTION_CANCEL -> movingDivider = false
+            }
+            return true
+        }
         drag?.let { active ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_MOVE -> {
@@ -239,13 +261,23 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
         drawGrid(canvas)
         val baseZoom = if (offline) offlineInfo?.maxZoom else if (layer == MapLayer.STREET) 19 else 22
         val baseDrawn = baseZoom?.let { drawTiles(canvas, TilePass.BASE, it) } ?: false
-        val historyDrawn = historyInfo?.let {
-            drawTiles(canvas, TilePass.HISTORICAL, it.maxZoom, tiles.historicalOpacity * 255 / 100)
+        val comparison = historicalDivider.takeIf { historyInfo != null }
+        val historyDrawn = historyInfo?.let { history ->
+            if (comparison == null) {
+                drawTiles(canvas, TilePass.HISTORICAL, history.maxZoom, tiles.historicalOpacity * 255 / 100)
+            } else {
+                val saved = canvas.save()
+                canvas.clipRect(0f, 0f, width * comparison, height.toFloat())
+                val drawn = drawTiles(canvas, TilePass.HISTORICAL, history.maxZoom)
+                canvas.restoreToCount(saved)
+                drawn
+            }
         } ?: false
         if (onlineReferences) {
             drawTiles(canvas, TilePass.ROADS, 19)
             drawTiles(canvas, TilePass.PLACES, 19)
         } else referenceInfo?.let { drawTiles(canvas, TilePass.LOCAL_REFERENCES, it.maxZoom) }
+        drawTrack(canvas)
         for (site in sites.asReversed()) {
             val type = objectType(site.type)
             if (site.area) drawShape(canvas, listOf(site.vertices) + site.holes, type.color, true)
@@ -293,6 +325,7 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
             canvas.drawCircle(p.x, p.y, 7 * scale, paint)
         }
         if (crosshair) drawCrosshair(canvas)
+        if (comparison != null) drawComparisonHandle(canvas, width * comparison)
         val footer = height - footerInset
         val creditLines = attribution.flatMap { credit -> wrapMapLabel(credit, 9f) }
         if (!baseDrawn && !historyDrawn && pending.isEmpty()) {
@@ -313,6 +346,50 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
         drawScale(canvas, footer, creditLines.size)
         creditLines.forEachIndexed { index, line ->
             drawLabel(canvas, line, 12 * scale, footer - (7 + 11 * (creditLines.lastIndex - index)) * scale, 9f)
+        }
+    }
+
+    private fun drawTrack(canvas: Canvas) {
+        if (trackSegments.isEmpty()) return
+        val path = Path()
+        val starts = ArrayList<PointF>()
+        for (segment in trackSegments) {
+            if (segment.size == 1) starts.add(pixel(segment.single()))
+            segment.forEachIndexed { index, coordinate ->
+                val p = pixel(coordinate)
+                if (index == 0) path.moveTo(p.x, p.y) else path.lineTo(p.x, p.y)
+            }
+        }
+        for ((color, thickness) in listOf(Color.WHITE to 6f, 0xff315dc3.toInt() to 3.5f)) {
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = thickness * scale
+            paint.strokeCap = Paint.Cap.ROUND
+            paint.strokeJoin = Paint.Join.ROUND
+            paint.color = color
+            canvas.drawPath(path, paint)
+            paint.style = Paint.Style.FILL
+            starts.forEach { canvas.drawCircle(it.x, it.y, thickness * scale, paint) }
+        }
+    }
+
+    private fun drawComparisonHandle(canvas: Canvas, x: Float) {
+        paint.color = Color.WHITE
+        paint.strokeWidth = 4f * scale
+        canvas.drawLine(x, 0f, x, (height - footerInset).toFloat(), paint)
+        paint.color = Palette.pine
+        paint.strokeWidth = 1.5f * scale
+        canvas.drawLine(x, 0f, x, (height - footerInset).toFloat(), paint)
+        val y = height * 0.42f
+        paint.color = Palette.pine
+        canvas.drawRoundRect(x - 18 * scale, y - 15 * scale, x + 18 * scale, y + 15 * scale, 11 * scale, 11 * scale, paint)
+        paint.color = Color.WHITE
+        paint.strokeWidth = 2 * scale
+        canvas.drawLine(x - 9 * scale, y, x + 9 * scale, y, paint)
+        for (direction in listOf(-1, 1)) {
+            val end = x + direction * 9 * scale
+            val span = x + direction * 4 * scale
+            canvas.drawLine(end, y, span, y - 4 * scale, paint)
+            canvas.drawLine(end, y, span, y + 4 * scale, paint)
         }
     }
 

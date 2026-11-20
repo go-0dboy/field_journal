@@ -1,13 +1,21 @@
 package ru.fieldjournal
 
+import android.app.Activity
 import android.database.sqlite.SQLiteDatabase
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
+import android.os.Looper
+import android.os.SystemClock
+import android.view.MotionEvent
+import android.view.View
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import java.io.ByteArrayOutputStream
@@ -108,6 +116,58 @@ class RasterArchiveTest {
         assertEquals(ReferenceSource.LOCAL, MapTiles(context).referenceSource())
         val online = tiles.read(MapLayer.HYBRID, false, "", tile, TilePass.LOCAL_REFERENCES)?.getPixel(20, 20)
         assertEquals(0x80001824.toInt(), online)
+    }
+
+    @Test fun comparisonDrawsDifferentRastersOnEitherSideAndDraggingKeepsTheViewport() {
+        val tile = Tile(9, 303, 148)
+        val historic = install(sqliteDb("historical", tile, true, "simple", color = Color.YELLOW))
+        sqliteDb("modern", tile, true, "simple", color = Color.BLUE).inputStream().use {
+            tiles.install(MapPackage.STREET, it)
+        }
+        val center = requireNotNull(historic.center)
+        tiles.setViewport(center, 9.0)
+        tiles.layer = MapLayer.STREET
+        tiles.offline = true
+        tiles.historicalEnabled = true
+        tiles.historicalOpacity = 25
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val map = FieldMap(controller.get(), tiles)
+        val frame = Bitmap.createBitmap(160, 180, Bitmap.Config.ARGB_8888)
+        try {
+            controller.get().setContentView(map)
+            controller.visible()
+            map.historicalDivider = 0.5f
+            val canvas = Canvas(frame)
+            val main = shadowOf(Looper.getMainLooper())
+            val deadline = System.nanoTime() + 5_000_000_000L
+            do {
+                main.idle()
+                map.measure(View.MeasureSpec.makeMeasureSpec(frame.width, View.MeasureSpec.EXACTLY),
+                    View.MeasureSpec.makeMeasureSpec(frame.height, View.MeasureSpec.EXACTLY))
+                map.layout(0, 0, frame.width, frame.height)
+                map.draw(canvas)
+                if (frame.getPixel(36, 30) == Color.YELLOW && frame.getPixel(124, 30) == Color.BLUE) break
+                Thread.sleep(10)
+            } while (System.nanoTime() < deadline)
+            assertEquals(Color.YELLOW, frame.getPixel(36, 30))
+            assertEquals(Color.BLUE, frame.getPixel(124, 30))
+            val down = SystemClock.uptimeMillis()
+            for ((action, x) in listOf(MotionEvent.ACTION_DOWN to 80f, MotionEvent.ACTION_MOVE to 130f,
+                MotionEvent.ACTION_UP to 130f)) {
+                val touch = MotionEvent.obtain(down, SystemClock.uptimeMillis(), action, x, 30f, 0)
+                try { assertTrue(map.dispatchTouchEvent(touch)) } finally { touch.recycle() }
+            }
+            assertEquals(130f / 160, requireNotNull(map.historicalDivider), 0.001f)
+            assertEquals(center, map.center)
+            assertEquals(9.0, map.zoom, 0.0)
+            map.draw(canvas)
+            assertEquals(Color.YELLOW, frame.getPixel(110, 30))
+            assertEquals(Color.BLUE, frame.getPixel(150, 30))
+        } finally {
+            frame.recycle()
+            map.release()
+            controller.pause().stop().destroy()
+        }
     }
 
     private fun sqliteDb(

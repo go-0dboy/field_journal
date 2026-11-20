@@ -50,6 +50,10 @@ internal class MapTiles(context: Context) {
         get() = settings.getString("credit", "").orEmpty()
         set(value) { settings.edit().putString("credit", value).apply() }
 
+    var coordinatesAtDevice: Boolean
+        get() = settings.getBoolean("coordinatesAtDevice", false)
+        set(value) { settings.edit().putBoolean("coordinatesAtDevice", value).apply() }
+
     var historicalEnabled: Boolean
         get() = settings.getBoolean("historicalEnabled", false)
         set(value) { settings.edit().putBoolean("historicalEnabled", value).apply() }

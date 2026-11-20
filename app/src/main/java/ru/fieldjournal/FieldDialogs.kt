@@ -16,7 +16,8 @@ internal fun Context.fieldPrompt(
     primary: PromptAction,
     secondary: PromptAction? = null,
     coordinates: String? = null,
-    destructive: Boolean = false
+    destructive: Boolean = false,
+    choices: List<PromptAction> = emptyList()
 ) {
     val dialog = AlertDialog.Builder(this).create()
     val body = vertical().apply {
@@ -38,6 +39,17 @@ internal fun Context.fieldPrompt(
                 addView(label("WGS 84 · широта, долгота", 13f, Palette.muted).apply {
                     gravity = Gravity.CENTER
                 }, -1, -2)
+            }, -1, -2)
+        }
+        if (choices.isNotEmpty()) {
+            addSpace(12)
+            addView(horizontal().apply {
+                for (choice in choices) {
+                    addView(action(choice.title) {
+                        dialog.dismiss()
+                        choice.run()
+                    }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(3) })
+                }
             }, -1, -2)
         }
         addSpace(16)

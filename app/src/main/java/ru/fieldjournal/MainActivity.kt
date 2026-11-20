@@ -43,6 +43,7 @@ class MainActivity : Activity() {
         MAP("Карта", NavIcon.MAP), SITES("Объекты", NavIcon.PIN), NOTES("Дневник", NavIcon.NOTE), SETTINGS("Данные", NavIcon.DATA)
     }
     private enum class DrawMode { NONE, POINT, AREA, MOVE_POINT, MOVE_AREA }
+    private enum class LocationAction { CENTER_MAP, SELECT_POINT, READOUT }
 
     private class IoTask(val title: String) {
         var onReady: (() -> Unit)? = null
@@ -83,12 +84,15 @@ class MainActivity : Activity() {
     private lateinit var mapPanel: FrameLayout
     private lateinit var mapCoordinates: TextView
     private lateinit var mapArea: TextView
+    private lateinit var mapComparisonStatus: TextView
+    private lateinit var mapTripStatus: TextView
     private lateinit var mapZoomButtons: View
     private lateinit var mapLocationButton: View
     private lateinit var statusBarScrim: View
     private lateinit var navigationBarScrim: View
     private val handler = Handler(Looper.getMainLooper())
     private val hideNotice = Runnable { notice.visibility = View.GONE }
+    private val saveDraftTask = Runnable { persistEditorDraft() }
     private var tab = Tab.MAP
     private var previousTab = Tab.MAP
     private var editorId: String? = null
@@ -103,6 +107,7 @@ class MainActivity : Activity() {
     private var drawMode = DrawMode.NONE
     private var geometrySite: String? = null
     private var selectedPoint: Coordinate? = null
+    private var selectedMeasurement: LocationFix? = null
     private val vertices = mutableListOf<Coordinate>()
     private var keyboardVisible = false
     private var catalogIndex = 0
@@ -112,7 +117,7 @@ class MainActivity : Activity() {
     private var search = ""
     private var filter: String? = null
     private var tracking = false
-    private var centerOnFix = false
+    private var locationAction: LocationAction? = null
     private var fix: LocationFix? = null
     private var pendingOwner: String? = null
     private var pendingIsNote = false
@@ -123,6 +128,16 @@ class MainActivity : Activity() {
     private var progressDialog: AlertDialog? = null
     private var preparedRaster: PreparedRaster? = null
     private var rasterDialog: AlertDialog? = null
+    private var trackTripId: String? = null
+    private var pendingTripRecording: String? = null
+    private var pendingTripExport: String? = null
+    private var tripSheet: AlertDialog? = null
+    private var refreshTripSheet: (() -> Unit)? = null
+    private val trackChanged: (String?) -> Unit = { problem ->
+        refreshTripTrack()
+        refreshTripSheet?.invoke()
+        problem?.let(::message)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -150,6 +165,11 @@ class MainActivity : Activity() {
             }
             geometrySite = it.getString("geometrySite")
             it.getDoubleArray("selectedPoint")?.let { point -> selectedPoint = Coordinate(point[0], point[1]) }
+            selectedPoint?.takeIf { _ -> it.containsKey("selectedAccuracy") }?.let { point ->
+                selectedMeasurement = LocationFix(point, it.getDouble("selectedAccuracy"),
+                    it.getDouble("selectedAltitude", Double.NaN).takeIf(Double::isFinite),
+                    0L, it.getLong("selectedTime"))
+            }
             it.getDoubleArray("vertices")?.toList()?.chunked(2)?.forEach { vertex ->
                 vertices.add(Coordinate(vertex[0], vertex[1]))
             }
@@ -159,10 +179,15 @@ class MainActivity : Activity() {
             editorScroll = it.getInt("editorScroll")
             filter = it.getString("filter")
             tracking = it.getBoolean("tracking")
+            locationAction = it.getString("locationAction")?.let(LocationAction::valueOf)
+            if (geometryDraft == null) geometryDraft = geometrySite?.let(store::draft)
             pendingOwner = it.getString("pendingOwner")
             pendingIsNote = it.getBoolean("pendingIsNote")
             pendingCamera = it.getString("pendingCamera")
             pendingMap = it.getString("pendingMap")?.let(MapLayer::valueOf)
+            trackTripId = it.getString("trackTripId")
+            pendingTripRecording = it.getString("pendingTripRecording")
+            pendingTripExport = it.getString("pendingTripExport")
         }
 
         root = vertical().apply {
@@ -219,6 +244,8 @@ class MainActivity : Activity() {
         }
         root.requestApplyInsets()
         createMap()
+        if (savedInstanceState == null) trackTripId = store.trips.active()?.id
+        savedInstanceState?.getFloat("historicalDivider", -1f)?.takeIf { it >= 0f }?.let { map.historicalDivider = it }
         (lastNonConfigurationInstance as? RetainedState)?.let { retained ->
             ioTask = retained.task
             preparedRaster = retained.raster
@@ -235,7 +262,8 @@ class MainActivity : Activity() {
         RetainedState(editView?.snapshot() ?: geometryDraft, ioTask, preparedRaster)
 
     override fun onSaveInstanceState(out: Bundle) {
-        persistDraftForRestoration(out)
+        persistEditorDraft()
+        out.putString("draftToken", draftToken)
         out.putString("tab", tab.name)
         out.putString("previous", previousTab.name)
         out.putString("editor", editorId)
@@ -245,6 +273,11 @@ class MainActivity : Activity() {
         out.putString("draw", drawMode.name)
         out.putString("geometrySite", geometrySite)
         selectedPoint?.let { out.putDoubleArray("selectedPoint", doubleArrayOf(it.latitude, it.longitude)) }
+        selectedMeasurement?.let {
+            out.putDouble("selectedAccuracy", it.accuracy)
+            out.putDouble("selectedAltitude", it.altitude ?: Double.NaN)
+            out.putLong("selectedTime", it.measuredAt)
+        }
         out.putDoubleArray("vertices", vertices.flatMap { listOf(it.latitude, it.longitude) }.toDoubleArray())
         out.putString("search", search)
         rememberCatalogPosition()
@@ -253,39 +286,46 @@ class MainActivity : Activity() {
         out.putInt("editorScroll", editView?.scrollPosition() ?: 0)
         out.putString("filter", filter)
         out.putBoolean("tracking", tracking)
+        out.putString("locationAction", locationAction?.name)
         out.putString("pendingOwner", pendingOwner)
         out.putBoolean("pendingIsNote", pendingIsNote)
         out.putString("pendingCamera", pendingCamera)
         out.putString("pendingMap", pendingMap?.name)
+        out.putString("trackTripId", trackTripId)
+        out.putString("pendingTripRecording", pendingTripRecording)
+        out.putString("pendingTripExport", pendingTripExport)
+        map.historicalDivider?.let { out.putFloat("historicalDivider", it) }
         super.onSaveInstanceState(out)
     }
 
-    private fun persistDraftForRestoration(out: Bundle) {
-        out.putString("draftToken", draftToken)
-        val draft = editView?.takeIf(JournalEditor::hasUnsavedChanges)?.snapshot() ?: geometryDraft
-        if (draft == null) return
-        runCatching {
-            val file = draftFile
-            val output = file.startWrite()
-            try {
-                output.write(draft.json().toString().toByteArray(Charsets.UTF_8))
-                file.finishWrite(output)
-            } catch (error: Exception) {
-                file.failWrite(output)
-                throw error
-            }
-        }.onFailure { android.util.Log.w("FieldJournal", "Could not keep editor draft for recreation", it) }
+    internal fun scheduleDraftSave() {
+        handler.removeCallbacks(saveDraftTask)
+        handler.postDelayed(saveDraftTask, 350L)
+    }
+
+    internal fun persistEditorDraft(): Boolean {
+        handler.removeCallbacks(saveDraftTask)
+        val draft = editView?.takeIf(JournalEditor::hasUnsavedChanges)?.snapshot()
+            ?: geometryDraft?.takeIf(EditorDraft::dirty) ?: return true
+        return runCatching { store.saveDraft(draft) }.onFailure {
+            android.util.Log.w("FieldJournal", "Could not keep editor draft", it)
+            if (foreground) message("Не удалось сохранить черновик")
+        }.isSuccess
     }
 
     override fun onStart() {
         super.onStart()
         foreground = true
+        TripRecording.observe(trackChanged)
+        refreshTripTrack()
         connectIo()
         showRasterChoice()
     }
 
     override fun onStop() {
         foreground = false
+        TripRecording.forget(trackChanged)
+        tripSheet?.dismiss()
         ioTask?.onReady = null
         progressDialog?.dismiss()
         progressDialog = null
@@ -296,10 +336,11 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        if (tracking && this::gps.isInitialized) gps.start()
+        if ((tracking || tiles.coordinatesAtDevice) && this::gps.isInitialized && gps.permitted()) tracking = gps.start()
     }
 
     override fun onPause() {
+        persistEditorDraft()
         gps.stop()
         super.onPause()
     }
@@ -350,7 +391,7 @@ class MainActivity : Activity() {
         root.setBackgroundColor(Palette.paper)
         if (editorId != null) {
             val id = requireNotNull(editorId)
-            val draft = draftToOpen?.takeIf { it.id == id } ?: if (editorIsNote) {
+            val draft = draftToOpen?.takeIf { it.id == id } ?: store.draft(id) ?: if (editorIsNote) {
                 store.note(id)?.let { EditorDraft(note = it) }
             } else {
                 store.site(id)?.let { EditorDraft(site = it) }
@@ -449,9 +490,11 @@ class MainActivity : Activity() {
                 DrawMode.AREA, DrawMode.MOVE_AREA -> addVertex(point)
                 DrawMode.POINT, DrawMode.MOVE_POINT -> {
                     selectedPoint = point
+                    selectedMeasurement = null
+                    if (locationAction == LocationAction.SELECT_POINT) locationAction = null
                     updateMapDraft()
                 }
-                DrawMode.NONE -> site?.let { openSite(it.id) }
+                DrawMode.NONE -> site?.let { showSitePreview(it) }
             }
         }
         map.onVertexTap = { index -> removeVertex(index) }
@@ -471,6 +514,8 @@ class MainActivity : Activity() {
             typeface = Typeface.create("monospace", Typeface.BOLD)
         }
         mapArea = mapCaption(12f)
+        mapComparisonStatus = mapCaption(12f).apply { text = "Старая слева · современная справа" }
+        mapTripStatus = mapCaption(12f).apply { text = "Записывается трек выезда" }
         mapPanel = FrameLayout(this).apply {
             addView(map, FrameLayout.LayoutParams(-1, -1))
             statusBarScrim = View(this@MainActivity).apply { setBackgroundColor(Palette.floatingSurface) }
@@ -535,27 +580,39 @@ class MainActivity : Activity() {
         if (!this::mapCoordinates.isInitialized) return
         val measured = recentFix()
         val point = when (drawMode) {
-            DrawMode.NONE -> measured?.point ?: map.center
+            DrawMode.NONE -> if (tiles.coordinatesAtDevice) measured?.point else map.center
             DrawMode.POINT, DrawMode.MOVE_POINT -> selectedPoint ?: map.center
             DrawMode.AREA, DrawMode.MOVE_AREA -> map.center
         }
-        val pointFix = measured?.takeIf { it.point == point }
-        val savedPoint = geometryDraft?.site?.takeIf { it.vertices.singleOrNull() == point }
-        val altitude = pointFix?.altitude ?: savedPoint?.altitude
-        val height = altitude?.let { "${it.roundToInt()} м" } ?: "—"
-        val accuracy = pointFix?.let { "±${it.accuracy.roundToInt()} м" }
-        mapCoordinates.text = buildString {
-            append(point.display())
-            accuracy?.let { append(" $it") }
-            append(" · Выс. $height")
-        }
-        mapCoordinates.contentDescription = buildString {
-            append("${point.display()}, высота $height")
-            accuracy?.let { append(", точность координат $it") }
+        if (point == null) {
+            mapCoordinates.text = if (tracking) "Моя позиция · определяю…" else "Моя позиция · нет замера"
+            mapCoordinates.contentDescription = null
+        } else {
+            val pointFix = selectedMeasurement ?: measured?.takeIf { it.point == point }
+            val savedPoint = geometryDraft?.site?.takeIf { it.vertices.singleOrNull() == point }
+            val height = (pointFix?.altitude ?: savedPoint?.altitude)?.let { "${it.roundToInt()} м" } ?: "—"
+            val accuracy = (pointFix?.accuracy ?: savedPoint?.accuracy)?.let { "±${it.roundToInt()} м" }
+            mapCoordinates.text = buildString {
+                append(point.display())
+                accuracy?.let { append(" $it") }
+                append(" · Выс. $height")
+            }
+            mapCoordinates.contentDescription = buildString {
+                val source = when {
+                    pointFix != null && drawMode == DrawMode.NONE && tiles.coordinatesAtDevice -> "Моя позиция"
+                    selectedMeasurement != null -> "Точка по GPS"
+                    selectedPoint != null -> "Выбранная точка"
+                    else -> "Центр карты"
+                }
+                append("$source, ${point.display()}, высота $height")
+                accuracy?.let { append(", точность координат $it") }
+            }
         }
         val drawingArea = drawMode == DrawMode.AREA || drawMode == DrawMode.MOVE_AREA
         mapArea.visibility = if (drawingArea) View.VISIBLE else View.GONE
         if (drawingArea) mapArea.text = "Вершин ${vertices.size} · ${areaLabel(areaSquareMeters(vertices))}"
+        mapComparisonStatus.visibility = if (map.historicalDivider != null && tiles.historicalEnabled) View.VISIBLE else View.GONE
+        mapTripStatus.visibility = if (TripRecording.tripId != null) View.VISIBLE else View.GONE
     }
 
     private fun addVertex(point: Coordinate) {
@@ -590,17 +647,20 @@ class MainActivity : Activity() {
                 DrawMode.NONE -> {
                     control(MapIcon.POINT, true) { beginDraw(DrawMode.POINT) }
                     control(MapIcon.AREA) { beginDraw(DrawMode.AREA) }
-                    control(MapIcon.COORDINATES) { showCoordinates(map.center, allowEntry = true) }
+                    control(MapIcon.COORDINATES) { showMapCoordinates() }
                     spacer()
                     control(MapIcon.LAYERS) { chooseLayers() }
                 }
                 DrawMode.POINT, DrawMode.MOVE_POINT -> {
                     control(MapIcon.LAYERS) { chooseLayers() }
-                    control(MapIcon.COORDINATES) { showCoordinates(selectedPoint ?: map.center) }
+                    control(MapIcon.COORDINATES) { showPointCoordinates() }
+                    control(MapIcon.GPS_POINT) {
+                        recentFix()?.let(::selectGpsPoint) ?: requestLocation(LocationAction.SELECT_POINT)
+                    }
                     spacer()
                     control(MapIcon.SET_POINT, true) {
                         val point = selectedPoint ?: map.center
-                        saveGeometry(listOf(point), recentFix()?.takeIf { it.point == point })
+                        saveGeometry(listOf(point), selectedMeasurement)
                     }
                     control(MapIcon.CANCEL) { cancelDraw() }
                 }
@@ -618,6 +678,8 @@ class MainActivity : Activity() {
             }
         }, -1, -2)
         header.addView(mapArea, -1, -2)
+        header.addView(mapComparisonStatus, -1, -2)
+        header.addView(mapTripStatus, -1, -2)
     }
 
     private fun beginDraw(mode: DrawMode) {
@@ -626,20 +688,45 @@ class MainActivity : Activity() {
         updateControls()
         message(if (mode == DrawMode.AREA || mode == DrawMode.MOVE_AREA)
             "Касание добавляет или удаляет вершину. Удерживайте её для перетаскивания"
-        else "Коснитесь места и нажмите галочку")
+        else "Коснитесь карты или выберите GPS, затем нажмите галочку")
     }
 
-    private fun showCoordinates(point: Coordinate, allowEntry: Boolean = false) {
-        val coordinates = point.display()
-        fieldPrompt(
-            title = if (allowEntry) "Координаты центра карты" else "Координаты точки",
-            primary = PromptAction("Скопировать") {
-                getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Координаты WGS 84", coordinates))
-                if (android.os.Build.VERSION.SDK_INT < 33) message("Координаты скопированы")
-            },
-            secondary = if (allowEntry) PromptAction("Ввести", ::manualPoint) else null,
-            coordinates = coordinates
+    private fun copyCoordinates(point: Coordinate) = PromptAction("Скопировать") {
+        getSystemService(ClipboardManager::class.java).setPrimaryClip(
+            ClipData.newPlainText("Координаты WGS 84", point.display())
         )
+        if (android.os.Build.VERSION.SDK_INT < 33) message("Координаты скопированы")
+    }
+
+    private fun showMapCoordinates() {
+        val device = tiles.coordinatesAtDevice
+        val point = if (device) recentFix()?.point else map.center
+        fieldPrompt(
+            title = if (device) "Координаты телефона" else "Координаты центра карты",
+            primary = point?.let(::copyCoordinates) ?: PromptAction("Определить") {
+                requestLocation(LocationAction.READOUT)
+            },
+            secondary = PromptAction("Ввести", ::manualPoint),
+            coordinates = point?.display(),
+            choices = listOf(
+                PromptAction("Моя позиция") {
+                    tiles.coordinatesAtDevice = true
+                    if (recentFix() == null) requestLocation(LocationAction.READOUT)
+                    updateMapStatus()
+                    if (recentFix() != null) showMapCoordinates()
+                },
+                PromptAction("Центр карты") {
+                    tiles.coordinatesAtDevice = false
+                    updateMapStatus()
+                    showMapCoordinates()
+                }
+            )
+        )
+    }
+
+    private fun showPointCoordinates() {
+        val point = selectedPoint ?: map.center
+        fieldPrompt("Координаты точки", copyCoordinates(point), coordinates = point.display())
     }
 
     private fun manualPoint() {
@@ -672,7 +759,7 @@ class MainActivity : Activity() {
         }
         dialog.dismiss()
         map.moveTo(point, maxOf(15.0, map.zoom))
-        saveGeometry(listOf(point))
+        saveGeometry(listOf(point), origin = CoordinateOrigin.MANUAL)
     }
 
     private fun resetDraw() {
@@ -682,6 +769,8 @@ class MainActivity : Activity() {
         geometrySite = null
         geometryDraft = null
         selectedPoint = null
+        selectedMeasurement = null
+        if (locationAction == LocationAction.SELECT_POINT) locationAction = null
         updateMapDraft()
     }
 
@@ -699,27 +788,33 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun saveGeometry(points: List<Coordinate>, fix: LocationFix? = null) {
+    private fun saveGeometry(
+        points: List<Coordinate>, fix: LocationFix? = null,
+        origin: CoordinateOrigin = if (fix == null) CoordinateOrigin.MAP else CoordinateOrigin.DEVICE
+    ) {
         val original = geometryDraft ?: geometrySite?.let(store::site)?.let { EditorDraft(site = it) }
         if (original != null) {
             val site = requireNotNull(original.site)
-            val updated = if (site.vertices == points) site else site.copy(
-                vertices = points, holes = emptyList(), accuracy = fix?.accuracy, altitude = fix?.altitude
+            val updated = if (site.vertices == points && fix == null) site else site.copy(
+                vertices = points, holes = emptyList(), accuracy = fix?.accuracy, altitude = fix?.altitude,
+                coordinateOrigin = origin, measuredAt = fix?.measuredAt
             )
             resetDraw()
             openDraft(original.copy(site = updated, dirty = original.dirty || updated != site))
             return
         }
         chooseType("Условный знак объекта") { type ->
-            val site = Site(title = type.title, type = type.id, vertices = points, accuracy = fix?.accuracy, altitude = fix?.altitude)
+            val site = Site(title = type.title, type = type.id, vertices = points,
+                accuracy = fix?.accuracy, altitude = fix?.altitude, coordinateOrigin = origin, measuredAt = fix?.measuredAt)
             resetDraw()
             previousTab = tab
-            openDraft(EditorDraft(site = site, isNew = true))
+            openDraft(EditorDraft(site = site, isNew = true, tripId = store.trips.active()?.id))
         }
     }
 
     internal fun editGeometry(site: Site) {
         val draft = editView?.snapshot() ?: EditorDraft(site = site)
+        persistEditorDraft()
         detachEditor()
         tab = Tab.MAP
         render()
@@ -759,53 +854,77 @@ class MainActivity : Activity() {
         dialog.show()
     }
 
-    private fun requestLocation() {
+    private fun requestLocation(action: LocationAction = LocationAction.CENTER_MAP) {
+        locationAction = action
         if (!gps.permitted()) {
             requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION), LOCATION)
             return
         }
-        centerOnFix = true
+        if (action == LocationAction.CENTER_MAP) tiles.coordinatesAtDevice = true
         tracking = true
         if (!gps.start()) {
             tracking = false
-            centerOnFix = false
+            locationAction = null
             AlertDialog.Builder(this).setTitle("Геолокация выключена")
                 .setMessage("Включите определение местоположения в настройках телефона.")
                 .setPositiveButton("Закрыть", null).setNegativeButton("Настройки") { _, _ ->
                     startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
                 }.show()
-        } else if (centerOnFix) {
+        } else if (locationAction != null) {
             message("Определяю местоположение…")
         }
+        updateMapStatus()
     }
 
-    private var fixClock = 0L
+    private fun selectGpsPoint(value: LocationFix) {
+        if (drawMode != DrawMode.POINT && drawMode != DrawMode.MOVE_POINT) return
+        selectedPoint = value.point
+        selectedMeasurement = value
+        map.moveTo(value.point, maxOf(map.zoom, 16.0))
+        updateMapDraft()
+        val accuracy = value.accuracy.roundToInt()
+        message(if (accuracy > 30) "Низкая точность ±$accuracy м. Проверьте перед сохранением"
+            else "Точка по GPS · ±$accuracy м")
+    }
+
     private fun recentFix(): LocationFix? =
-        fix?.takeIf { android.os.SystemClock.elapsedRealtime() - fixClock <= 45000 }
+        fix?.takeIf { android.os.SystemClock.elapsedRealtime() - it.elapsedMs in 0..45_000 }
 
     private fun receivedFix(value: LocationFix) {
         fix = value
-        fixClock = value.elapsedMs
         map.locate = value
-        if (centerOnFix) {
-            map.moveTo(value.point, maxOf(map.zoom, if (value.accuracy < 200) 16.0 else 12.0))
-            centerOnFix = false
+        when (locationAction) {
+            LocationAction.CENTER_MAP -> map.moveTo(value.point, maxOf(map.zoom, if (value.accuracy < 200) 16.0 else 12.0))
+            LocationAction.SELECT_POINT -> selectGpsPoint(value)
+            LocationAction.READOUT, null -> Unit
         }
+        locationAction = null
         updateMapStatus()
-        val timestamp = fixClock
         handler.postDelayed({
-            if (fixClock == timestamp) {
+            if (fix === value) {
                 fix = null
                 map.locate = null
                 updateMapStatus()
             }
-        }, (45000 - (android.os.SystemClock.elapsedRealtime() - timestamp)).coerceAtLeast(0))
+        }, (45000 - (android.os.SystemClock.elapsedRealtime() - value.elapsedMs)).coerceAtLeast(0))
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, results: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, results)
-        if (requestCode == LOCATION) {
-            if (gps.permitted()) requestLocation() else message("Разрешите геолокацию в настройках приложения")
+        when (requestCode) {
+            LOCATION -> {
+                if (gps.permitted()) requestLocation(locationAction ?: LocationAction.CENTER_MAP)
+                else {
+                    locationAction = null
+                    message("Разрешите геолокацию в настройках приложения")
+                }
+            }
+            TRIP_LOCATION -> {
+                val tripId = pendingTripRecording
+                pendingTripRecording = null
+                if (tripId != null && gps.permitted()) startTripRecording(tripId)
+                else message("Разрешите геолокацию для записи трека")
+            }
         }
     }
 
@@ -869,11 +988,13 @@ class MainActivity : Activity() {
             } else {
                 group.addView(layerSwitch("Историческая карта", tiles.historicalEnabled) {
                     tiles.historicalEnabled = it
+                    if (!it) map.historicalDivider = null
                     map.refresh()
+                    updateMapStatus()
                     redrawControls()
                 }, -1, -2)
                 group.addView(label(history.name, 14f, Palette.muted))
-                if (tiles.historicalEnabled) {
+                if (tiles.historicalEnabled && map.historicalDivider == null) {
                     group.addSpace(8)
                     val opacityLabel = label("Непрозрачность · ${tiles.historicalOpacity}%", 14f, Palette.ink, true)
                     group.addView(opacityLabel)
@@ -894,6 +1015,31 @@ class MainActivity : Activity() {
                         })
                     }
                     group.addView(slider, -1, -2)
+                }
+                group.addSpace(6)
+                val comparison = map.historicalDivider
+                group.addView(action(if (comparison == null) "Сравнить карты" else "Закончить сравнение") {
+                    tiles.historicalEnabled = true
+                    map.historicalDivider = if (comparison == null) 0.5f else null
+                    map.refresh()
+                    updateMapStatus()
+                    dialog.dismiss()
+                    if (map.historicalDivider != null) message("Потяните разделитель карт")
+                }, -1, -2)
+                if (comparison != null) {
+                    group.addView(SeekBar(this).apply {
+                        contentDescription = "Граница сравнения карт"
+                        max = 92
+                        progress = (comparison * 100).roundToInt() - 4
+                        minimumHeight = dp(48)
+                        setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                            override fun onProgressChanged(bar: SeekBar, value: Int, fromUser: Boolean) {
+                                if (fromUser) map.historicalDivider = (value + 4) / 100f
+                            }
+                            override fun onStartTrackingTouch(bar: SeekBar) = Unit
+                            override fun onStopTrackingTouch(bar: SeekBar) = Unit
+                        })
+                    }, -1, -2)
                 }
                 group.addSpace(6)
                 group.addView(horizontal().apply {
@@ -1068,8 +1214,17 @@ class MainActivity : Activity() {
 
     private fun showNotes() {
         val loading = vertical().apply { setPadding(dp(14), dp(5), dp(14), dp(8)) }
+        loading.addView(horizontal().apply {
+            addView(action("Выезды") { showTrips() }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(6) })
+            val count = store.draftCount()
+            addView(action(if (count > 0) "Черновики · $count" else "Черновики") { showDrafts() },
+                LinearLayout.LayoutParams(0, -2, 1f))
+        }, -1, -2)
+        loading.addSpace(8)
+        val records = vertical()
         val status = label("Загрузка записей…", 14f, Palette.muted)
-        loading.addView(status)
+        records.addView(status)
+        loading.addView(records, LinearLayout.LayoutParams(-1, 0, 1f))
         content.addView(loading, -1, -1)
         val journal = store
         diaryReads.execute {
@@ -1077,9 +1232,9 @@ class MainActivity : Activity() {
             handler.post {
                 if (isDestroyed || loading.parent !== content) return@post
                 rows.onSuccess { notes ->
-                    loading.removeAllViews()
+                    records.removeAllViews()
                     if (notes.isEmpty()) {
-                        empty(loading, "Дневник пока пуст", "Создайте запись о выезде, наблюдении или работе с источниками.")
+                        empty(records, "Дневник пока пуст", "Создайте запись о выезде, наблюдении или работе с источниками.")
                     } else {
                         val results = ListView(this).apply {
                             divider = android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT)
@@ -1093,11 +1248,106 @@ class MainActivity : Activity() {
                             }
                             setOnItemClickListener { _, _, position, _ -> openNote(notes[position].id) }
                         }
-                        loading.addView(results, -1, -1)
+                        records.addView(results, -1, -1)
                     }
                 }.onFailure { status.text = "Не удалось загрузить дневник" }
             }
         }
+    }
+
+    internal fun refreshDiary() {
+        if (tab == Tab.NOTES && editorId == null) render()
+    }
+
+    internal fun resumeDraft(draft: EditorDraft) {
+        previousTab = tab
+        noteOriginId = null
+        noteOriginScroll = 0
+        openDraft(draft)
+    }
+
+    internal fun watchTripSheet(dialog: AlertDialog, refresh: () -> Unit) {
+        tripSheet?.dismiss()
+        tripSheet = dialog
+        refreshTripSheet = refresh
+        dialog.setOnDismissListener {
+            if (tripSheet === dialog) {
+                tripSheet = null
+                refreshTripSheet = null
+            }
+        }
+    }
+
+    internal fun selectTripTrack(id: String?) {
+        trackTripId = id
+        refreshTripTrack()
+    }
+
+    private fun refreshTripTrack() {
+        updateMapStatus()
+        val id = trackTripId
+        if (id == null) {
+            map.trackSegments = emptyList()
+            return
+        }
+        val trips = store.trips
+        diaryReads.execute {
+            val segments = runCatching {
+                trips.points(id).groupBy(TrackPoint::segment).values.map { group -> group.map(TrackPoint::point) }
+            }
+            handler.post {
+                if (isDestroyed || trackTripId != id) return@post
+                segments.onSuccess { map.trackSegments = it }
+            }
+        }
+    }
+
+    internal fun showTripOnMap(id: String) {
+        val contents = store.trips.contents(id)
+        val route = contents.points.map(TrackPoint::point)
+        val points = route.ifEmpty { contents.sites.map(Site::anchor) }
+        if (points.isEmpty()) {
+            message("В этом выезде пока нет точек маршрута и объектов")
+            return
+        }
+        selectTripTrack(id)
+        tab = Tab.MAP
+        render()
+        map.post { if (!isDestroyed && tab == Tab.MAP && trackTripId == id) map.showPoints(points) }
+    }
+
+    internal fun showingTripTrack(id: String) = trackTripId == id
+
+    internal fun startTripRecording(id: String) {
+        if (store.trips.active()?.id != id) return
+        if (!gps.permitted()) {
+            pendingTripRecording = id
+            requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION), TRIP_LOCATION)
+            return
+        }
+        runCatching { TripRecordingService.start(this, id) }.onSuccess {
+            selectTripTrack(id)
+            val notifications = getPreferences(MODE_PRIVATE)
+            if (android.os.Build.VERSION.SDK_INT >= 33 &&
+                checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED &&
+                !notifications.getBoolean("askedTrackNotifications", false)) {
+                notifications.edit().putBoolean("askedTrackNotifications", true).apply()
+                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), TRIP_NOTIFICATIONS)
+            }
+        }.onFailure { message("Не удалось запустить запись трека") }
+    }
+
+    internal fun finishTrip(id: String) {
+        store.trips.finish(id)
+        if (TripRecording.tripId == id) TripRecordingService.pause(this)
+    }
+
+    internal fun exportTrip(id: String, forQgis: Boolean) {
+        val trip = store.trips.get(id) ?: return
+        val name = trip.title.replace(Regex("""[^\p{L}\p{N}._ -]"""), "_").trim().take(80).ifBlank { "Выезд" }
+        pendingTripExport = id
+        if (forQgis) exportDocument(TRIP_KIT, "application/zip", "$name.zip")
+        else exportDocument(TRIP_GPX, "application/gpx+xml", "$name.gpx")
     }
 
     private fun empty(list: LinearLayout, title: String, detail: String) {
@@ -1171,7 +1421,7 @@ class MainActivity : Activity() {
             if (tiles.customUrl.isBlank()) "Карта по умолчанию · OpenStreetMap" else tiles.customCredit) { customSource() }
         heading("Обмен и резервные копии")
         card(list, "Импорт ZIP или GeoJSON", "Существующие записи с теми же ID сохраняются") { pickDocument(IMPORT, "*/*") }
-        card(list, "Экспорт резервной копии", "ZIP · карточки, дневник и вложения") { exportDocument(BACKUP, "application/zip", "field-journal-${shortDate()}.zip") }
+        card(list, "Экспорт резервной копии", "ZIP · карточки, записи, выезды и вложения") { exportDocument(BACKUP, "application/zip", "field-journal-${shortDate()}.zip") }
         card(list, "Экспорт объектов GeoJSON", "WGS 84 · точки, контуры и поля карточек") { exportDocument(GEOJSON, "application/geo+json", "field-journal-${shortDate()}.geojson") }
         list.addView(label("Подтверждённые изменения хранятся в локальной базе. Файлы карт хранятся отдельно от резервных копий.", 13f, Palette.muted))
     }
@@ -1251,6 +1501,7 @@ class MainActivity : Activity() {
         editorId = draft.id
         editorIsNote = draft.note != null
         render()
+        persistEditorDraft()
     }
 
     internal fun openRelatedNote(id: String) = openNote(id)
@@ -1275,10 +1526,10 @@ class MainActivity : Activity() {
         }
     }
 
-    internal fun createNote(siteId: String?) {
+    internal fun createNote(siteId: String?, compact: Boolean = false, tripId: String? = store.trips.active()?.id) {
         confirmBeforeLeaving {
-            val note = Note(title = "Полевое наблюдение", siteId = siteId)
-            openNoteFromCurrentScreen(note.id, EditorDraft(note = note, isNew = true))
+            val note = Note(title = "Полевое наблюдение", siteId = siteId, tripId = tripId)
+            openNoteFromCurrentScreen(note.id, EditorDraft(note = note, isNew = true, compact = compact))
         }
     }
 
@@ -1302,10 +1553,12 @@ class MainActivity : Activity() {
                 }
             },
             secondary = PromptAction("Не сохранять") {
-                editor.discardDraft()
-                after()
+                if (editor.discardDraft()) after()
             },
-            destructive = true
+            destructive = true,
+            choices = listOf(PromptAction("В черновики") {
+                if (persistEditorDraft()) after()
+            })
         )
     }
 
@@ -1318,8 +1571,7 @@ class MainActivity : Activity() {
     internal fun closeEditor() = confirmBeforeLeaving { finishEditor() }
 
     internal fun closeDeletedEditor() {
-        editView?.discardDraft()
-        finishEditor()
+        if (editView?.discardDraft() != false) finishEditor()
     }
 
     private fun finishEditor() {
@@ -1360,24 +1612,11 @@ class MainActivity : Activity() {
     }
 
     internal fun openAttachment(attachment: Attachment) {
-        if (attachment.mime.startsWith("image/")) {
-            val file = store.attachmentFile(attachment.id)
-            val options = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            android.graphics.BitmapFactory.decodeFile(file.path, options)
-            options.inJustDecodeBounds = false
-            options.inSampleSize = 1
-            while (maxOf(options.outWidth, options.outHeight) / options.inSampleSize > 1600) options.inSampleSize *= 2
-            android.graphics.BitmapFactory.decodeFile(file.path, options)?.let { bitmap ->
-                val image = android.widget.ImageView(this).apply {
-                    adjustViewBounds = true
-                    maxHeight = dp(530)
-                    setImageBitmap(bitmap)
-                    scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
-                }
-                AlertDialog.Builder(this).setTitle(attachment.name).setView(image).setPositiveButton("Закрыть", null).show()
-                return
-            }
-        }
+        if (attachment.mime.startsWith("image/")) openPhotoGallery(listOf(attachment), 0)
+        else openExternalAttachment(attachment)
+    }
+
+    internal fun openExternalAttachment(attachment: Attachment) {
         val intent = Intent(Intent.ACTION_VIEW).setDataAndType(attachmentUri(this, attachment), attachment.mime)
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         runCatching { startActivity(intent) }.onFailure { message("На телефоне нет приложения для этого файла") }
@@ -1441,9 +1680,24 @@ class MainActivity : Activity() {
                 }) { result ->
                     render()
                     AlertDialog.Builder(this).setTitle("Импорт завершён")
-                        .setMessage("Объектов добавлено: ${result.sites}\nЗаписей дневника: ${result.notes}\nСовпадений пропущено: ${result.skipped}")
+                        .setMessage(buildString {
+                            appendLine("Объектов добавлено: ${result.sites}")
+                            appendLine("Записей дневника: ${result.notes}")
+                            if (result.trips > 0) appendLine("Выездов: ${result.trips}")
+                            append("Совпадений пропущено: ${result.skipped}")
+                        })
                         .setPositiveButton("Готово", null).show()
                 }
+            }
+            TRIP_GPX, TRIP_KIT -> {
+                val id = pendingTripExport
+                pendingTripExport = null
+                if (resultCode != RESULT_OK || uri == null || id == null) return
+                withIo("Экспорт выезда", {
+                    val openOutput = { requireNotNull(resolver.openOutputStream(uri, "wt")) }
+                    if (requestCode == TRIP_GPX) journal.exportTripGpx(id, openOutput)
+                    else journal.exportTripKit(id, openOutput)
+                }) { message("Выезд экспортирован") }
             }
             BACKUP, GEOJSON -> {
                 if (resultCode != RESULT_OK || uri == null) return
@@ -1636,6 +1890,10 @@ class MainActivity : Activity() {
         private const val GEOJSON = 16
         private const val HISTORICAL = 17
         private const val REFERENCES = 18
+        private const val TRIP_GPX = 19
+        private const val TRIP_KIT = 20
+        private const val TRIP_LOCATION = 21
+        private const val TRIP_NOTIFICATIONS = 22
         private val io = Executors.newSingleThreadExecutor()
         private val diaryReads = Executors.newSingleThreadExecutor()
 

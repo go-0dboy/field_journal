@@ -58,6 +58,18 @@ internal data class Attachment(val id: String, val name: String, val mime: Strin
     }
 }
 
+internal enum class CoordinateOrigin(val id: String, val title: String) {
+    DEVICE("device", "Положение телефона"),
+    MAP("map", "Точка на карте"),
+    MANUAL("manual", "Введено вручную");
+
+    companion object {
+        fun read(id: String) = entries.firstOrNull { it.id == id }
+    }
+}
+
+internal val verifiableSiteFields = setOf("period", "culture", "condition", "context")
+
 internal data class Site(
     val id: String = newId(),
     val title: String = "",
@@ -77,7 +89,10 @@ internal data class Site(
     val altitude: Double? = null,
     val attachments: List<Attachment> = emptyList(),
     val created: Long = System.currentTimeMillis(),
-    val updated: Long = created
+    val updated: Long = created,
+    val coordinateOrigin: CoordinateOrigin? = null,
+    val measuredAt: Long? = null,
+    val uncertainFields: Set<String> = emptySet()
 ) {
     init { require(vertices.size == 1 || vertices.size >= 3) }
     val area get() = vertices.size > 1
@@ -102,6 +117,9 @@ internal data class Site(
             .put("accuracy_m", accuracy ?: JSONObject.NULL).put("altitude_m", altitude ?: JSONObject.NULL)
             .put("attachments", JSONArray(attachments.map(Attachment::json)))
             .put("created", created).put("updated", updated)
+        coordinateOrigin?.let { properties.put("coordinate_origin", it.id) }
+        measuredAt?.let { properties.put("measured_at", it) }
+        if (uncertainFields.isNotEmpty()) properties.put("uncertain_fields", JSONArray(uncertainFields.sorted()))
         return JSONObject().put("type", "Feature").put("id", id).put("geometry", geometry).put("properties", properties)
     }
 
@@ -139,7 +157,12 @@ internal data class Site(
                 p.optString("period"), p.optString("culture"), p.optString("condition"),
                 p.optString("inventory"), p.optString("author"), p.optString("confidence"),
                 p.optString("context"), p.optString("sources"), p.nullableDouble("accuracy_m"),
-                p.nullableDouble("altitude_m"), attachments, created, p.optLong("updated", created)
+                p.nullableDouble("altitude_m"), attachments, created, p.optLong("updated", created),
+                coordinateOrigin = CoordinateOrigin.read(p.optString("coordinate_origin")),
+                measuredAt = p.optLong("measured_at").takeIf { it > 0 },
+                uncertainFields = p.array("uncertain_fields").let { fields ->
+                    (0 until fields.length()).map(fields::optString).filterTo(linkedSetOf()) { it in verifiableSiteFields }
+                }
             )
         }
     }
@@ -154,12 +177,14 @@ internal data class Note(
     val siteId: String? = null,
     val attachments: List<Attachment> = emptyList(),
     val created: Long = System.currentTimeMillis(),
-    val updated: Long = created
+    val updated: Long = created,
+    val tripId: String? = null
 ) {
     fun json() = JSONObject().put("id", id).put("title", title).put("body", body)
         .put("author", author).put("weather", weather).put("site_id", siteId ?: JSONObject.NULL)
         .put("attachments", JSONArray(attachments.map(Attachment::json)))
         .put("created", created).put("updated", updated)
+        .apply { tripId?.let { put("trip_id", it) } }
 
     companion object {
         fun read(value: JSONObject): Note = Note(
@@ -167,7 +192,8 @@ internal data class Note(
             value.optString("author"), value.optString("weather"),
             if (value.isNull("site_id")) null else value.optString("site_id"),
             value.array("attachments").objects().map(Attachment::read), value.getLong("created"),
-            value.optLong("updated", value.getLong("created"))
+            value.optLong("updated", value.getLong("created")),
+            value.optString("trip_id").takeIf(attachmentId::matches)
         )
     }
 }

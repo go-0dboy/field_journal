@@ -19,17 +19,19 @@ import java.util.zip.ZipOutputStream
 
 internal class JournalStore(
     context: Context, private val backupLimit: Long = MAX_ARCHIVE, private val geoJsonLimit: Long = MAX_JSON
-) : SQLiteOpenHelper(context, "field-journal.db", null, 2) {
+) : SQLiteOpenHelper(context, "field-journal.db", null, 3) {
     private val cache = context.cacheDir
     val attachments = File(context.filesDir, "attachments").apply { mkdirs() }
     private val snapshot = AtomicFile(File(context.filesDir, "journal-autosave.json"))
     private var snapshotTask: ScheduledFuture<*>? = null
+    val trips = FieldTrips(this)
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE sites (id TEXT PRIMARY KEY, updated INTEGER NOT NULL, payload TEXT NOT NULL, title TEXT)")
         db.execSQL("CREATE TABLE notes (id TEXT PRIMARY KEY, updated INTEGER NOT NULL, payload TEXT NOT NULL, " +
             "title TEXT, created INTEGER, site_id TEXT)")
         createNoteIndexes(db)
+        createFieldworkTables(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -42,13 +44,21 @@ internal class JournalStore(
                 db.query(table, arrayOf("id", "payload"), null, null, null, null, "rowid").use { cursor ->
                     while (cursor.moveToNext()) {
                         val json = JSONObject(cursor.getString(1))
-                        val values = summaryValues(table, json)
+                        val values = summaryValues(table, json, includeTrip = false)
                         db.update(table, values, "id = ?", arrayOf(cursor.getString(0)))
                     }
                 }
             }
             createNoteIndexes(db)
         }
+        if (oldVersion < 3) createFieldworkTables(db)
+    }
+
+    private fun createFieldworkTables(db: SQLiteDatabase) {
+        db.execSQL("ALTER TABLE notes ADD COLUMN trip_id TEXT")
+        db.execSQL("CREATE INDEX notes_trip_created ON notes(trip_id, created DESC)")
+        db.execSQL("CREATE TABLE editor_drafts (id TEXT PRIMARY KEY, updated INTEGER NOT NULL, payload TEXT NOT NULL)")
+        FieldTrips.createTables(db)
     }
 
     private fun createNoteIndexes(db: SQLiteDatabase) {
@@ -66,6 +76,16 @@ internal class JournalStore(
     fun sites() = readRows("sites") { Site.read(it, withAttachments = true, validate = false) }
     fun notes() = readRows("notes", Note::read)
 
+    fun notesForTrip(id: String): List<Note> = readableDatabase.query(
+        "notes", arrayOf("payload"), "trip_id = ?", arrayOf(id), null, null, "created DESC"
+    ).use { cursor ->
+        buildList { while (cursor.moveToNext()) add(Note.read(JSONObject(cursor.getString(0)))) }
+    }
+
+    fun latestObservation(siteId: String): Note? = readableDatabase.query(
+        "notes", arrayOf("payload"), "site_id = ?", arrayOf(siteId), null, null, "created DESC", "1"
+    ).use { cursor -> if (cursor.moveToFirst()) Note.read(JSONObject(cursor.getString(0))) else null }
+
     fun noteSummaries(siteId: String? = null): List<NoteSummary> {
         val sql = "SELECT notes.id, notes.title, notes.created, sites.title FROM notes " +
             "LEFT JOIN sites ON notes.site_id = sites.id " +
@@ -80,7 +100,7 @@ internal class JournalStore(
         }
     }
 
-    private fun summaryValues(table: String, json: JSONObject) = ContentValues().apply {
+    private fun summaryValues(table: String, json: JSONObject, includeTrip: Boolean = true) = ContentValues().apply {
         if (table == "sites") {
             val properties = json.getJSONObject("properties")
             put("title", properties.getString("title"))
@@ -88,6 +108,7 @@ internal class JournalStore(
             put("title", json.getString("title"))
             put("created", json.getLong("created"))
             put("site_id", if (json.isNull("site_id")) null else json.getString("site_id"))
+            if (includeTrip) put("trip_id", json.optString("trip_id").takeIf(attachmentId::matches))
         }
     }
 
@@ -106,22 +127,71 @@ internal class JournalStore(
     fun site(id: String) = record("sites", id)?.let { Site.read(it, withAttachments = true, validate = false) }
     fun note(id: String) = record("notes", id)?.let(Note::read)
 
+    fun drafts() = readRows("editor_drafts", EditorDraft::read)
+    fun draftCount(): Int = readableDatabase.rawQuery("SELECT COUNT(*) FROM editor_drafts", null)
+        .use { cursor -> cursor.moveToFirst(); cursor.getInt(0) }
+    fun draft(id: String) = record("editor_drafts", id)?.let(EditorDraft::read)
+
+    @Synchronized fun saveDraft(draft: EditorDraft) {
+        check(writableDatabase.insertWithOnConflict("editor_drafts", null, ContentValues().apply {
+            put("id", draft.id)
+            put("updated", System.currentTimeMillis())
+            put("payload", draft.json().toString())
+        }, SQLiteDatabase.CONFLICT_REPLACE) != -1L) { "Не удалось сохранить черновик" }
+    }
+
+    @Synchronized fun discardDraft(draft: EditorDraft) {
+        writableDatabase.delete("editor_drafts", "id = ?", arrayOf(draft.id))
+        val recordExists = if (draft.site != null) site(draft.id) != null else note(draft.id) != null
+        val deletedRecordFiles = if (recordExists) emptyList() else draft.attachmentIds
+        removeUnreferenced(draft.staged + deletedRecordFiles)
+    }
+
+    @Synchronized fun commitDraft(draft: EditorDraft) {
+        val timestamp = System.currentTimeMillis()
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            draft.site?.let { site ->
+                writeSite(db, site.copy(title = site.title.ifBlank { "Объект без названия" }, updated = timestamp), draft.removed)
+                draft.tripId?.let { trips.visit(db, it, site.id, timestamp) }
+            }
+            draft.note?.let { note ->
+                writeNote(db, note.copy(title = note.title.ifBlank { "Полевое наблюдение" }, updated = timestamp), draft.removed)
+            }
+            db.delete("editor_drafts", "id = ?", arrayOf(draft.id))
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        scheduleSnapshot()
+        removeUnreferenced(draft.removed + draft.staged)
+    }
+
     @Synchronized fun save(site: Site, removeAttachments: Set<String> = emptySet()) {
-        val previous = site(site.id)?.attachments.orEmpty()
-        val files = (site.attachments + previous).filterNot { it.id in removeAttachments }.distinctBy(Attachment::id)
-        val saved = site.copy(attachments = files)
-        check(write(writableDatabase, "sites", saved.id, saved.updated, saved.feature(), SQLiteDatabase.CONFLICT_REPLACE) != -1L)
+        writeSite(writableDatabase, site, removeAttachments)
         scheduleSnapshot()
         removeUnreferenced(removeAttachments)
     }
 
+    private fun writeSite(db: SQLiteDatabase, site: Site, removed: Set<String>) {
+        val previous = site(site.id)?.attachments.orEmpty()
+        val files = (site.attachments + previous).filterNot { it.id in removed }.distinctBy(Attachment::id)
+        val saved = site.copy(attachments = files)
+        check(write(db, "sites", saved.id, saved.updated, saved.feature(), SQLiteDatabase.CONFLICT_REPLACE) != -1L)
+    }
+
     @Synchronized fun save(note: Note, removeAttachments: Set<String> = emptySet()) {
-        val previous = note(note.id)?.attachments.orEmpty()
-        val files = (note.attachments + previous).filterNot { it.id in removeAttachments }.distinctBy(Attachment::id)
-        val saved = note.copy(attachments = files)
-        check(write(writableDatabase, "notes", saved.id, saved.updated, saved.json(), SQLiteDatabase.CONFLICT_REPLACE) != -1L)
+        writeNote(writableDatabase, note, removeAttachments)
         scheduleSnapshot()
         removeUnreferenced(removeAttachments)
+    }
+
+    private fun writeNote(db: SQLiteDatabase, note: Note, removed: Set<String>) {
+        val previous = note(note.id)?.attachments.orEmpty()
+        val files = (note.attachments + previous).filterNot { it.id in removed }.distinctBy(Attachment::id)
+        val saved = note.copy(attachments = files)
+        check(write(db, "notes", saved.id, saved.updated, saved.json(), SQLiteDatabase.CONFLICT_REPLACE) != -1L)
     }
 
     @Synchronized fun deleteSite(id: String) {
@@ -138,11 +208,12 @@ internal class JournalStore(
         removeUnreferenced(files.map(Attachment::id).toSet())
     }
 
-    // Only consider files from committed references. Fresh camera and picker files may still be in flight.
+    // Only remove known candidates. Fresh camera and picker files may still be in flight.
     private fun removeUnreferenced(candidates: Set<String>) {
         if (candidates.isEmpty()) return
         runCatching {
-            val referenced = attachmentRecords(sites(), notes()).map(Attachment::id).toSet()
+            val referenced = attachmentRecords(sites(), notes()).map(Attachment::id).toSet() +
+                drafts().flatMap { it.staged + it.attachmentIds }
             (candidates - referenced).forEach {
                 val file = attachmentFile(it)
                 if (file.exists() && !file.delete()) android.util.Log.w("FieldJournal", "Could not remove an unused attachment")
@@ -177,16 +248,17 @@ internal class JournalStore(
     private fun manifest(sites: List<Site>, notes: List<Note>) = JSONObject()
         .put("format", "field-journal").put("version", 1)
         .put("sites", collection(sites)).put("notes", JSONArray(notes.map(Note::json)))
+        .put("trips", trips.backup())
 
-    private fun scheduleSnapshot() {
+    @Synchronized internal fun scheduleSnapshot() {
         snapshotTask?.cancel(false)
         snapshotTask = snapshotExecutor.schedule(::saveSnapshot, 1, TimeUnit.SECONDS)
     }
 
     private fun saveSnapshot() {
         runCatching {
-            val sitesAndNotes = synchronized(this) { sites() to notes() }
-            val bytes = manifest(sitesAndNotes.first, sitesAndNotes.second).toString().toByteArray(Charsets.UTF_8)
+            val data = synchronized(this) { manifest(sites(), notes()) }
+            val bytes = data.toString().toByteArray(Charsets.UTF_8)
             val out = snapshot.startWrite()
             try {
                 out.write(bytes)
@@ -229,6 +301,25 @@ internal class JournalStore(
             openOutput().use { out -> file.inputStream().use { it.copyTo(out) } }
         } finally {
             file.delete()
+        }
+    }
+
+    fun exportTripGpx(tripId: String, openOutput: () -> OutputStream) {
+        val contents = trips.contents(tripId)
+        require(contents.points.isNotEmpty()) { "Для этого выезда ещё нет трека" }
+        openOutput().use { writeTripGpx(contents, it) }
+    }
+
+    fun exportTripKit(tripId: String, openOutput: () -> OutputStream) {
+        val archive = File.createTempFile("fieldwork-", ".zip", cache)
+        try {
+            synchronized(this) {
+                val contents = trips.contents(tripId)
+                archive.outputStream().buffered().use { writeTripKit(contents, it, ::attachmentFile) }
+            }
+            openOutput().use { out -> archive.inputStream().use { it.copyTo(out) } }
+        } finally {
+            archive.delete()
         }
     }
 
@@ -301,6 +392,7 @@ internal class JournalStore(
                 }
                 val sites = readBackupSites(json.getJSONObject("sites"))
                 val notes = json.getJSONArray("notes").objects().map(Note::read)
+                val tripBackups = json.array("trips").objects().map(TripBackup::read)
                 val files = attachmentRecords(sites, notes)
                 var remaining = backupLimit
                 for (attachment in files) {
@@ -323,7 +415,7 @@ internal class JournalStore(
                         temp.delete()
                     }
                 }
-                return importRecords(sites, notes).also { removeUnreferenced(installed.map(File::getName).toSet()) }
+                return importRecords(sites, notes, tripBackups).also { removeUnreferenced(installed.map(File::getName).toSet()) }
             }
         } catch (error: Exception) {
             installed.forEach(File::delete)
@@ -333,10 +425,11 @@ internal class JournalStore(
         }
     }
 
-    @Synchronized private fun importRecords(sites: List<Site>, notes: List<Note>): ImportResult {
+    private fun importRecords(sites: List<Site>, notes: List<Note>, tripBackups: List<TripBackup>): ImportResult {
         val db = writableDatabase
         var addedSites = 0
         var addedNotes = 0
+        val addedTrips: Int
         db.beginTransaction()
         try {
             for (site in sites) {
@@ -345,12 +438,14 @@ internal class JournalStore(
             for (note in notes) {
                 if (write(db, "notes", note.id, note.updated, note.json(), SQLiteDatabase.CONFLICT_IGNORE) != -1L) addedNotes++
             }
+            addedTrips = trips.restore(db, tripBackups)
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
         }
         scheduleSnapshot()
-        return ImportResult(addedSites, addedNotes, sites.size + notes.size - addedSites - addedNotes)
+        return ImportResult(addedSites, addedNotes,
+            sites.size + notes.size + tripBackups.size - addedSites - addedNotes - addedTrips, addedTrips)
     }
 
     private fun readBackupSites(json: JSONObject): List<Site> {
@@ -400,7 +495,7 @@ internal class JournalStore(
 
 internal data class NoteSummary(val id: String, val title: String, val created: Long, val siteTitle: String?)
 
-internal data class ImportResult(val sites: Int, val notes: Int, val skipped: Int)
+internal data class ImportResult(val sites: Int, val notes: Int, val skipped: Int, val trips: Int = 0)
 
 internal fun InputStream.copyLimited(out: OutputStream, max: Long): Long {
     val buffer = ByteArray(65536)

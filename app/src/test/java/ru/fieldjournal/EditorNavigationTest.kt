@@ -154,7 +154,7 @@ class EditorNavigationTest {
             root.action(MapIcon.POINT.description).performClick()
             layout(root)
             layout(root)
-            val hint = root.text("Коснитесь места и нажмите галочку")
+            val hint = root.text("Коснитесь карты или выберите GPS, затем нажмите галочку")
             val install = root.action(MapIcon.SET_POINT.description)
             assertTrue(top(hint) >= top(install) + install.height)
             assertTrue(top(hint) + hint.height <= top(root.action("Моё место")))
@@ -210,6 +210,54 @@ class EditorNavigationTest {
             assertFalse(activity.store.attachmentFile(attachment.id).exists())
         } finally {
             controller.pause().stop().destroy()
+        }
+    }
+
+    @Test fun quickObservationRestoresTextPhotoAndTripAfterReopeningTheApp() {
+        val first = Robolectric.buildActivity(MainActivity::class.java).setup()
+        val activity = first.get()
+        val site = Site(title = "Урочище", vertices = listOf(Coordinate(59.0, 33.0)))
+        val trip = activity.store.trips.start("Первый выезд")
+        val photo = activity.store.addAttachment("photo contents".byteInputStream(), "Урочище.jpg", "image/jpeg")
+        try {
+            activity.store.save(site)
+            val map = activity.window.decorView.descendants().filterIsInstance<FieldMap>().single()
+            map.onTap!!.invoke(site.anchor, site)
+            val preview = ShadowAlertDialog.getLatestAlertDialog().window!!.decorView
+            preview.text(site.title)
+            preview.text("Новое наблюдение").performClick()
+            val root = activity.window.decorView
+            root.input("Короткая заметка").setText("Северная граница проверена")
+            root.descendants().filterIsInstance<JournalEditor>().single().stageAttachment(photo)
+            root.action("Назад").performClick()
+            chooseConfirmation("В черновики")
+            assertTrue(activity.store.noteSummaries(site.id).isEmpty())
+            assertEquals(1, activity.store.draftCount())
+        } finally {
+            first.pause().stop().destroy()
+        }
+        val second = Robolectric.buildActivity(MainActivity::class.java).setup()
+        try {
+            val reopened = second.get()
+            val root = reopened.window.decorView
+            root.text("Дневник").performClick()
+            root.text("Черновики · 1").performClick()
+            ShadowAlertDialog.getLatestAlertDialog().window!!.decorView.text("Продолжить").performClick()
+            assertEquals("Северная граница проверена", root.input("Короткая заметка").text.toString())
+            root.text(photo.name)
+            root.action("Сохранить и закрыть").performClick()
+            chooseConfirmation("Сохранить")
+            assertEquals(0, reopened.store.draftCount())
+            val contents = reopened.store.trips.contents(trip.id)
+            val note = contents.notes.single()
+            assertEquals(site, contents.sites.single())
+            assertEquals(site.id, note.siteId)
+            assertEquals(trip.id, note.tripId)
+            assertEquals(listOf(photo), note.attachments)
+            assertEquals("photo contents", reopened.store.attachmentFile(photo.id).readText())
+        } finally {
+            activity.store.trips.finish(trip.id)
+            second.pause().stop().destroy()
         }
     }
 

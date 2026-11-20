@@ -290,6 +290,7 @@ internal enum class MapIcon(val description: String) {
     POINT("Добавить точку"),
     AREA("Добавить область"),
     COORDINATES("Координаты"),
+    GPS_POINT("Отметить здесь по GPS"),
     LAYERS("Слои"),
     SET_POINT("Установить точку"),
     DONE_AREA("Готово"),
@@ -421,7 +422,7 @@ private class MapIconDrawable(private val size: Int, private val icon: MapIcon, 
                 line(5f, 12f, 19f, 12f)
                 if (icon == MapIcon.ZOOM_IN) line(12f, 5f, 12f, 19f)
             }
-            MapIcon.LOCATION -> {
+            MapIcon.LOCATION, MapIcon.GPS_POINT -> {
                 circle(12f, 12f, 8f)
                 line(12f, 1f, 12f, 4f)
                 line(12f, 20f, 12f, 23f)

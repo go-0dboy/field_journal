@@ -11,7 +11,10 @@ import android.os.Build
 import android.os.Looper
 import android.os.SystemClock
 
-internal data class LocationFix(val point: Coordinate, val accuracy: Double, val altitude: Double?, val elapsedMs: Long)
+internal data class LocationFix(
+    val point: Coordinate, val accuracy: Double, val altitude: Double?,
+    val elapsedMs: Long, val measuredAt: Long = System.currentTimeMillis()
+)
 
 internal class FieldLocation(private val context: Context, private val onFix: (LocationFix) -> Unit) {
     private val manager = context.getSystemService(LocationManager::class.java)
@@ -28,7 +31,7 @@ internal class FieldLocation(private val context: Context, private val onFix: (L
     fun permitted() = granted(Manifest.permission.ACCESS_COARSE_LOCATION) || granted(Manifest.permission.ACCESS_FINE_LOCATION)
 
     @SuppressLint("MissingPermission")
-    fun start(): Boolean {
+    fun start(useCachedFix: Boolean = true, intervalMs: Long = 2000L, distanceMeters: Float = 1f): Boolean {
         if (!permitted()) return false
         stop()
         best = null
@@ -40,9 +43,9 @@ internal class FieldLocation(private val context: Context, private val onFix: (L
         var registered = false
         for (provider in allowed) {
             runCatching {
-                manager.requestLocationUpdates(provider, 2000L, 1f, watcher, Looper.getMainLooper())
+                manager.requestLocationUpdates(provider, intervalMs, distanceMeters, watcher, Looper.getMainLooper())
                 registered = true
-                manager.getLastKnownLocation(provider)?.let(::accept)
+                if (useCachedFix) manager.getLastKnownLocation(provider)?.let(::accept)
             }
         }
         return registered
@@ -55,7 +58,7 @@ internal class FieldLocation(private val context: Context, private val onFix: (L
     private fun accept(location: Location) {
         val elapsed = location.elapsedRealtimeNanos / 1_000_000L
         val age = SystemClock.elapsedRealtime() - elapsed
-        if (age > 45_000 || !location.hasAccuracy() || location.accuracy <= 0) return
+        if (age !in 0..45_000 || !location.hasAccuracy() || !location.accuracy.isFinite() || location.accuracy <= 0) return
         val previous = best
         if (previous != null) {
             val gap = (location.elapsedRealtimeNanos - previous.elapsedRealtimeNanos) / 1_000_000L
@@ -63,6 +66,7 @@ internal class FieldLocation(private val context: Context, private val onFix: (L
         }
         best = location
         onFix(LocationFix(Coordinate(location.latitude, location.longitude), location.accuracy.toDouble(),
-            location.altitude.takeIf { location.hasAltitude() }, elapsed))
+            location.altitude.takeIf { location.hasAltitude() && it.isFinite() }, elapsed,
+            location.time.takeIf { it > 0 } ?: System.currentTimeMillis()))
     }
 }

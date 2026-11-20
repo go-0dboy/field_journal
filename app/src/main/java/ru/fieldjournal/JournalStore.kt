@@ -138,6 +138,19 @@ internal class JournalStore(
         candidate.id != value.id && candidate.containsGeometry(value.vertices, value.holes)
     }.sortedBy { areaSquareMeters(it.vertices) }
 
+    fun childrenForNewArea(area: Site): List<Site> {
+        if (!area.area) return emptyList()
+        val sites = sites()
+        val byId = sites.associateBy(Site::id)
+        val size = areaSquareMeters(area.vertices)
+        return sites.filter { child ->
+            if (child.id == area.id || !area.containsGeometry(child.vertices, child.holes)) return@filter false
+            val parent = child.parentId?.let(byId::get)
+            parent == null || !parent.containsGeometry(child.vertices, child.holes) ||
+                areaSquareMeters(parent.vertices) > size
+        }
+    }
+
     fun children(id: String): List<Site> = readableDatabase.query(
         "sites", arrayOf("payload"), "parent_id = ?", arrayOf(id), null, null, "updated DESC"
     ).use { cursor ->
@@ -174,7 +187,19 @@ internal class JournalStore(
         db.beginTransaction()
         try {
             draft.site?.let { site ->
+                val children = if (draft.isNew) childrenForNewArea(site) else emptyList()
                 writeSite(db, site.copy(title = site.title.ifBlank { "Объект без названия" }, updated = timestamp), draft.removed)
+                for (child in children) {
+                    val linked = child.copy(parentId = site.id, updated = timestamp)
+                    check(write(db, "sites", linked.id, linked.updated, linked.feature(),
+                        SQLiteDatabase.CONFLICT_REPLACE) != -1L)
+                    val childDraft = this.draft(child.id)
+                    val edited = childDraft?.site
+                    if (edited != null && edited.parentId == child.parentId &&
+                        site.containsGeometry(edited.vertices, edited.holes)) {
+                        saveDraft(childDraft.copy(site = edited.copy(parentId = site.id)))
+                    }
+                }
                 draft.tripId?.let { trips.visit(db, it, site.id, timestamp) }
             }
             draft.note?.let { note ->

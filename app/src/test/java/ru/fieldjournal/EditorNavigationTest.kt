@@ -294,6 +294,44 @@ class EditorNavigationTest {
         }
     }
 
+    @Test fun sectionNavigationReplacesHeadersAndObjectEditorUsesMapIconsAndOneSourceAction() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        val activity = controller.get()
+        val tiles = MapTiles.get(activity)
+        val previousOffline = tiles.offline
+        try {
+            val root = activity.window.decorView
+            fun count(label: String) = root.descendants().filterIsInstance<TextView>().count { it.text == label }
+            root.text("Объекты").performClick()
+            assertEquals(1, count("Объекты"))
+            assertEquals(0, count("На карте"))
+            root.text("Дневник").performClick()
+            assertEquals(1, count("Дневник"))
+            layout(root)
+            assertTrue(root.text("+ Запись").width > 260)
+            assertTrue(top(root.text("+ Запись")) > top(root.text("Записи")))
+            root.text("Данные").performClick()
+            assertEquals(0, count("Данные и карты"))
+
+            val area = Site(title = "Комплекс", vertices = listOf(
+                Coordinate(59.0, 33.0), Coordinate(59.0, 33.01), Coordinate(59.01, 33.01)
+            ))
+            activity.store.save(area)
+            activity.openSite(area.id)
+            assertEquals(0, count("Название с карты"))
+            assertTrue(root.action("Добавить точку внутри") is android.widget.ImageButton)
+            assertTrue(root.action("Добавить область внутри") is android.widget.ImageButton)
+            tiles.offline = true
+            root.text("Заполнить по открытым источникам").performClick()
+            val dialog = requireNotNull(ShadowAlertDialog.getLatestAlertDialog().window).decorView
+            assertEquals(area.title, dialog.input("Название объекта и населённый пункт").text.toString())
+            dialog.text("Найти в Википедии")
+        } finally {
+            tiles.offline = previousOffline
+            controller.pause().stop().destroy()
+        }
+    }
+
     private fun chooseConfirmation(button: String) {
         ShadowAlertDialog.getLatestAlertDialog().window!!.decorView.text(button).performClick()
         shadowOf(Looper.getMainLooper()).idle()

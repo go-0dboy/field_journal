@@ -221,10 +221,8 @@ internal class JournalEditor(
         body.addView(info, -1, -2)
         section("Описание")
         field("title", "Название", value.title)
-        body.addView(activity.action("Название с карты") { findPlace(value, details = false) }, -1, -2)
-        body.addSpace(8)
         field("description", "Описание местности и объекта", value.description, 3)
-        body.addView(activity.action("Заполнить по открытым источникам") { findPlace(value, details = true) }, -1, -2)
+        body.addView(activity.action("Заполнить по открытым источникам") { findPlace() }, -1, -2)
         addGroup(value)
         addMedia()
         section("Датировка и состояние")
@@ -285,50 +283,105 @@ internal class JournalEditor(
                 }, -1, -2)
             }
         }, -1, -2)
+        adoptionNotice()?.let { notice ->
+            body.addSpace(8)
+            body.addView(activity.label(notice, 14f, Palette.pine))
+        }
         if (!value.area || isNew) return
-        body.addSpace(6)
-        val parts = activity.horizontal()
-        chip(parts, "+ Точка внутри") { activity.createInside(value, area = false) }
-        chip(parts, "+ Область внутри") { activity.createInside(value, area = true) }
-        body.addView(parts, -1, -2)
+        body.addSpace(8)
+        body.addView(activity.horizontal().apply {
+            for ((icon, drawArea) in listOf(MapIcon.POINT to false, MapIcon.AREA to true)) {
+                val button = activity.mapAction(icon) { activity.createInside(value, area = drawArea) }.apply {
+                    contentDescription = if (drawArea) "Добавить область внутри" else "Добавить точку внутри"
+                    tooltipText = contentDescription
+                }
+                addView(button, LinearLayout.LayoutParams(activity.dp(48), activity.dp(48)).apply {
+                    marginEnd = activity.dp(8)
+                })
+            }
+        }, -1, -2)
         for (child in activity.store.children(value.id)) activity.card(body, child.title, child.symbol.title,
             SymbolView(activity, child.symbol)) { activity.openGroupSite(child.id) }
     }
 
-    private fun findPlace(value: Site, details: Boolean) {
+    internal fun adoptionNotice(): String? {
+        val area = site?.takeIf { isNew && it.area } ?: return null
+        val count = activity.store.childrenForNewArea(area).size
+        return if (count == 0) null else "После сохранения эта область станет родительской для объектов внутри неё. Объектов для привязки — $count."
+    }
+
+    private fun findPlace() {
         if (lookingUpPlace) return
-        if (MapTiles.get(activity).offline) {
-            activity.message("Включите онлайн-режим для поиска по открытым источникам")
-            return
-        }
-        activity.confirm("Искать по координатам?", "Координаты объекта получит публичный сервер данных OpenStreetMap. Текст карточки и фотографии остаются на устройстве.") {
-            lookingUpPlace = true
-            activity.message("Поиск по открытым источникам…")
-            placeReads.execute {
-                val result = runCatching { OpenSources.lookup(value.anchor, details) }
-                activity.runOnUiThread {
-                    lookingUpPlace = false
-                    if (!isAttachedToWindow || activity.isFinishing) return@runOnUiThread
-                    result.onSuccess { place ->
-                        if (place == null) activity.message("Именованный объект рядом с точкой не найден")
-                        else offerPlace(place, details)
-                    }.onFailure { activity.message("Источники недоступны. Попробуйте позже.") }
+        val initial = text("title").takeUnless { it == objectType(type.orEmpty()).title }.orEmpty()
+        activity.fieldworkSheet("Открытые источники") { sheet ->
+            val name = activity.edit("Название объекта и населённый пункт", initial)
+            val status = activity.label("", 14f, Palette.muted).apply {
+                accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+                visibility = View.GONE
+            }
+            val results = activity.vertical()
+            addView(name, -1, -2)
+            addSpace(8)
+            val button = activity.action("Найти в Википедии", true) {}
+            button.setOnClickListener {
+                val query = name.text.toString().trim()
+                status.visibility = View.VISIBLE
+                if (query.isBlank()) {
+                    status.text = "Введите название объекта"
+                    return@setOnClickListener
                 }
+                results.removeAllViews()
+                status.text = "Ищу статьи…"
+                button.isEnabled = false
+                name.isEnabled = false
+                placeReads.execute {
+                    val match = runCatching { OpenSources.search(query) }
+                    activity.runOnUiThread {
+                        if (!sheet.isShowing || !isAttachedToWindow || activity.isFinishing) return@runOnUiThread
+                        button.isEnabled = true
+                        name.isEnabled = true
+                        match.onSuccess { articles ->
+                            status.text = if (articles.isEmpty()) "Статьи не найдены. Уточните название или населённый пункт."
+                                else "Выберите статью об объекте"
+                            for (article in articles) activity.card(results, article.title,
+                                article.excerpt.take(130).ifBlank { "Википедия" }) {
+                                sheet.dismiss()
+                                loadSourceArticle(article)
+                            }
+                        }.onFailure { status.text = "Википедия недоступна. Проверьте соединение и повторите поиск." }
+                    }
+                }
+            }
+            addView(button, -1, -2)
+            addSpace(8)
+            addView(status, -1, -2)
+            addView(results, -1, -2)
+        }
+    }
+
+    private fun loadSourceArticle(article: SourceArticle) {
+        lookingUpPlace = true
+        activity.message("Загружаю сведения об объекте…")
+        placeReads.execute {
+            val facts = runCatching { OpenSources.facts(article.wikidataId) }.getOrDefault(SourceFacts())
+            activity.runOnUiThread {
+                lookingUpPlace = false
+                if (!isAttachedToWindow || activity.isFinishing) return@runOnUiThread
+                offerPlace(article, facts)
             }
         }
     }
 
-    private fun offerPlace(place: PublicPlace, details: Boolean) {
-        val suggestions = linkedMapOf("title" to ("Название" to place.name))
-        if (details) {
-            suggestions["description"] = "Описание" to place.description
-            suggestions["period"] = "Датировка" to place.period
-            suggestions["inventory"] = "Реестровый номер" to place.inventory
-        }
+    private fun offerPlace(article: SourceArticle, facts: SourceFacts) {
+        val suggestions = linkedMapOf(
+            "title" to ("Название" to article.title),
+            "description" to ("Фрагмент статьи" to article.excerpt),
+            "period" to ("Год основания" to facts.year),
+            "inventory" to ("Номер ЕГРОКН" to facts.registry)
+        )
         activity.fieldworkSheet("Данные открытых источников") { sheet ->
-            addView(activity.label("Возможное совпадение. Сверьте объект перед заполнением. © OpenStreetMap contributors",
-                13f, Palette.muted))
-            addSpace(8)
+            addView(activity.label("Выберите поля для карточки", 14f, Palette.muted))
+            addSpace(6)
             val selected = linkedMapOf<String, CheckBox>()
             for ((key, suggestion) in suggestions) {
                 val (label, proposed) = suggestion
@@ -343,19 +396,26 @@ internal class JournalEditor(
                 selected[key] = control
                 addView(control, -1, -2)
             }
-            for (link in place.links) {
-                addView(activity.action(android.net.Uri.parse(link).host.orEmpty()) { activity.openLink(link) }, -1, -2)
-                addSpace(4)
+            addView(activity.action("Открыть статью в Википедии") { activity.openLink(article.url) }, -1, -2)
+            addSpace(5)
+            article.wikidataUrl?.let { url ->
+                addView(activity.action("Открыть Викиданные") { activity.openLink(url) }, -1, -2)
+                addSpace(5)
             }
             addView(activity.action("Применить выбранное", true) {
                 val updates = selected.filterValues { it.isChecked }.keys
                 if (updates.isEmpty()) {
-                    sheet.dismiss()
+                    activity.message("Выберите хотя бы одно поле")
                     return@action
                 }
                 for (key in updates) inputs[key]?.setText(suggestions.getValue(key).second)
+                val sources = buildList {
+                    add("Википедия · ${article.title} · ${article.url}")
+                    if ("description" in updates) add("Фрагмент статьи · CC BY-SA 4.0 · ${OpenSources.ARTICLE_LICENSE}")
+                    article.wikidataUrl?.let { add("Викиданные · $it") }
+                }
                 inputs["sources"]?.setText((text("sources").lineSequence().filter(String::isNotBlank).toList() +
-                    place.links).distinct().joinToString("\n"))
+                    sources).distinct().joinToString("\n"))
                 sheet.dismiss()
                 activity.persistEditorDraft()
                 activity.message("Данные добавлены в черновик")

@@ -17,7 +17,8 @@ internal fun Context.fieldPrompt(
     secondary: PromptAction? = null,
     coordinates: String? = null,
     destructive: Boolean = false,
-    choices: List<PromptAction> = emptyList()
+    choices: List<PromptAction> = emptyList(),
+    detail: String? = null
 ) {
     val dialog = AlertDialog.Builder(this).create()
     val body = vertical().apply {
@@ -26,6 +27,10 @@ internal fun Context.fieldPrompt(
             gravity = Gravity.CENTER
             if (Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true
         }, -1, -2)
+        if (detail != null) {
+            addSpace(8)
+            addView(label(detail, 14f, Palette.muted), -1, -2)
+        }
         if (coordinates != null) {
             addSpace(12)
             addView(vertical().apply {

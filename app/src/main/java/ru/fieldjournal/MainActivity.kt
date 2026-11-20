@@ -429,8 +429,7 @@ class MainActivity : Activity() {
             }
             draftToOpen = null
             if (draft != null) {
-                setHeader(if (draft.note != null) "Запись дневника" else "Карточка объекта",
-                    editorAction(done = true) { closeEditor() }, true)
+                setEditorHeader(if (draft.note != null) "Запись дневника" else "Карточка объекта")
                 updateNavigationVisibility()
                 editView = JournalEditor(this, draft).also { editor ->
                     content.addView(editor)
@@ -460,21 +459,9 @@ class MainActivity : Activity() {
                 refreshMap()
                 updateControls()
             }
-            Tab.SITES -> {
-                setHeader("Объекты", action("На карте") { switch(Tab.MAP) })
-                showSites()
-            }
-            Tab.NOTES -> {
-                val newRecord = if (diaryPage == DiaryPage.RECORDS) action("+ Запись", true) {
-                    createNote(null, tripId = filterTripNotes ?: store.trips.active()?.id)
-                } else null
-                setHeader("Дневник", newRecord)
-                showNotes()
-            }
-            Tab.SETTINGS -> {
-                setHeader("Данные и карты", null)
-                showSettings()
-            }
+            Tab.SITES -> showSites()
+            Tab.NOTES -> showNotes()
+            Tab.SETTINGS -> showSettings()
         }
     }
 
@@ -482,13 +469,13 @@ class MainActivity : Activity() {
         nav.visibility = if (editorId != null || keyboardVisible) View.GONE else View.VISIBLE
     }
 
-    private fun setHeader(title: String, action: View?, back: Boolean = false) {
+    private fun setEditorHeader(title: String) {
         val row = horizontal().apply { setPadding(dp(16), dp(8), dp(16), dp(8)) }
-        if (back) row.addView(editorAction(done = false) { closeEditor() }, dp(48), dp(48))
-        val name = label(title, if (back) 19f else 25f, Palette.pine, true)
+        row.addView(editorAction(done = false) { closeEditor() }, dp(48), dp(48))
+        val name = label(title, 19f, Palette.pine, true)
         if (android.os.Build.VERSION.SDK_INT >= 28) name.isAccessibilityHeading = true
-        row.addView(name, LinearLayout.LayoutParams(0, -2, 1f).apply { if (back) leftMargin = dp(10) })
-        if (action != null) row.addView(action, LinearLayout.LayoutParams(if (back) dp(48) else -2, dp(48)).apply {
+        row.addView(name, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(10) })
+        row.addView(editorAction(done = true) { closeEditor() }, LinearLayout.LayoutParams(dp(48), dp(48)).apply {
             marginStart = dp(8)
         })
         header.addView(row)
@@ -1306,6 +1293,9 @@ class MainActivity : Activity() {
             return
         }
         val filter = filterTripNotes?.let(store.trips::get)
+        val trip = filter ?: store.trips.active()
+        loading.addView(action("+ Запись", true) { createNote(null, tripId = trip?.id) }, -1, -2)
+        loading.addSpace(8)
         if (filter != null) {
             loading.addView(action("${filter.title}  ×") {
                 filterTripNotes = null
@@ -1675,6 +1665,7 @@ class MainActivity : Activity() {
         }
         fieldPrompt(
             title = question,
+            detail = editor.adoptionNotice(),
             primary = PromptAction("Сохранить") {
                 if (editor.saveConfirmed()) {
                     after()

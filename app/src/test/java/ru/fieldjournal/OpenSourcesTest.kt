@@ -10,42 +10,48 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class OpenSourcesTest {
-    @Test fun retriesAnOverloadedServerWithASecondSource() {
-        val urls = mutableListOf<String>()
-        val response = OpenSources.nearby("[out:json];node(1);out;") { url ->
-            urls.add(url)
-            if (urls.size == 1) throw java.io.IOException("HTTP 502")
-            JSONObject("""{"elements":[]}""")
+    @Test fun searchesByTheEnteredNameAndOrdersArticlesByRelevance() {
+        val articles = OpenSources.search("Монастырь & Тихвин") { url ->
+            assertTrue(url.startsWith("https://ru.wikipedia.org/w/api.php?"))
+            val query = android.net.Uri.parse(url)
+            assertEquals("Монастырь & Тихвин", query.getQueryParameter("gsrsearch"))
+            assertEquals("search", query.getQueryParameter("generator"))
+            assertNull(query.getQueryParameter("ggscoord"))
+            JSONObject("""
+                {"query":{"pages":[
+                    {"pageid":4,"title":"Другой монастырь","index":2},
+                    {"pageid":3,"title":"Тихвинский монастырь","index":1,
+                     "extract":"Краткое описание","pageprops":{"wikibase_item":"Q4458458"}},
+                    {"pageid":5,"title":"Монастыри","index":3,"pageprops":{"disambiguation":""}}
+                ]}}
+            """.trimIndent())
         }
-        assertTrue(urls[0].startsWith("https://overpass-api.de/"))
-        assertTrue(urls[1].startsWith("https://overpass.private.coffee/"))
-        assertEquals(0, response.getJSONArray("elements").length())
+        assertEquals(listOf("Тихвинский монастырь", "Другой монастырь"), articles.map(SourceArticle::title))
+        assertEquals("Краткое описание", articles.first().excerpt)
+        assertEquals("https://ru.wikipedia.org/?curid=3", articles.first().url)
+        assertEquals("https://www.wikidata.org/wiki/Q4458458", articles.first().wikidataUrl)
+        assertTrue(OpenSources.search("неизвестный объект") { JSONObject("""{"batchcomplete":true}""") }.isEmpty())
         assertThrows(java.io.IOException::class.java) {
-            OpenSources.nearby("query") { throw java.io.IOException("Offline") }
+            OpenSources.search("Монастырь") { JSONObject("""{"error":{"code":"maxlag"}}""") }
         }
     }
 
-    @Test fun prefersTheNamedBuildingAndKeepsOnlyValidSourceLinks() {
-        val data = JSONObject("""
-            {"elements":[
-                {"type":"way","id":1,"bounds":{"minlat":58.999,"maxlat":59.001,"minlon":32.999,"maxlon":33.001},
-                 "tags":{"name":"Дорога","highway":"primary"}},
-                {"type":"node","id":2,"lat":59.00015,"lon":33,"tags":{"name":"Другая точка"}},
-                {"type":"way","id":3,"bounds":{"minlat":58.9999,"maxlat":59.0001,"minlon":32.9999,"maxlon":33.0001},
-                 "tags":{"name":"Tower","name:ru":"Звонница","description:ru":"Башня монастыря",
-                         "start_date":"1820","ref:ru:okrn":"123","wikidata":"Q135","wikipedia":"ru:Старая звонница",
-                         "website":"javascript:alert(1)"}}
-            ]}
-        """.trimIndent())
-        val place = requireNotNull(OpenSources.parse(data, Coordinate(59.0, 33.0)))
-        assertEquals("Звонница", place.name)
-        assertEquals("Башня монастыря", place.description)
-        assertEquals("1820", place.period)
-        assertEquals("123", place.inventory)
-        assertEquals(3, place.links.size)
-        assertEquals("https://www.openstreetmap.org/way/3", place.links.first())
-        assertEquals("https://www.wikidata.org/wiki/Q135", place.links[1])
-        assertTrue(place.links[2].startsWith("https://ru.wikipedia.org/wiki/"))
-        assertNull(OpenSources.parse(data, Coordinate(60.0, 33.0)))
+    @Test fun readsOnlyUsableYearsAndOfficialRegisterIdentifiers() {
+        val facts = OpenSources.facts("Q4458458") { url ->
+            assertTrue(url.startsWith("https://www.wikidata.org/w/api.php?"))
+            assertEquals("Q4458458", android.net.Uri.parse(url).getQueryParameter("ids"))
+            JSONObject("""
+                {"entities":{"Q4458458":{"claims":{
+                    "P571":[
+                        {"rank":"normal","mainsnak":{"datavalue":{"value":{"time":"+1500-01-01T00:00:00Z","precision":7}}}},
+                        {"rank":"preferred","mainsnak":{"datavalue":{"value":{"time":"+1560-01-01T00:00:00Z","precision":9}}}},
+                        {"rank":"deprecated","mainsnak":{"datavalue":{"value":{"time":"+1900-01-01T00:00:00Z","precision":9}}}}
+                    ],
+                    "P5381":[{"rank":"normal","mainsnak":{"datavalue":{"value":"471420555330006"}}}]
+                }}}}
+            """.trimIndent())
+        }
+        assertEquals(SourceFacts("1560", "471420555330006"), facts)
+        assertEquals(SourceFacts(), OpenSources.facts("bad/id") { error("Invalid IDs must not be requested") })
     }
 }

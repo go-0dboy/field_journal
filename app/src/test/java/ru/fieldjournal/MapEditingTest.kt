@@ -71,6 +71,56 @@ class MapEditingTest {
         }
     }
 
+    @Test fun newAreaWarnsBeforeLinkingExistingObjectsAndKeepsNestedGroups() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        try {
+            val activity = controller.get()
+            val store = activity.store
+            val root = activity.window.decorView
+            val map = root.descendants().filterIsInstance<FieldMap>().first()
+            fun boundary(south: Double, west: Double, north: Double, east: Double) = listOf(
+                Coordinate(south, west), Coordinate(south, east), Coordinate(north, east), Coordinate(north, west)
+            )
+            val inner = Site(title = "Первый корпус", vertices = boundary(57.002, 40.002, 57.004, 40.004))
+            val innerPoint = Site(title = "Вход", vertices = listOf(Coordinate(57.003, 40.003)), parentId = inner.id)
+            val existing = Site(title = "Отдельная точка", vertices = listOf(Coordinate(57.006, 40.006)))
+            val outside = Site(title = "За границей", vertices = boundary(57.008, 40.008, 57.015, 40.015))
+            for (site in listOf(inner, innerPoint, existing, outside)) store.save(site)
+            val known = store.sites().map(Site::id).toSet()
+
+            root.icon(MapIcon.AREA).performClick()
+            for (point in boundary(57.0, 40.0, 57.01, 40.01)) map.onTap?.invoke(point, null)
+            root.icon(MapIcon.DONE_AREA).performClick()
+            chooseFirstType()
+            val notice = "После сохранения эта область станет родительской для объектов внутри неё. Объектов для привязки — 2."
+            root.text(notice)
+            activity.closeEditor()
+            val confirmation = ShadowAlertDialog.getLatestAlertDialog().window!!.decorView
+            confirmation.text(notice)
+            assertNull(store.site(inner.id)?.parentId)
+            assertNull(store.site(existing.id)?.parentId)
+            assertEquals(inner.id, store.site(innerPoint.id)?.parentId)
+            confirmation.text("Отмена").performClick()
+            assertEquals(known, store.sites().map(Site::id).toSet())
+
+            confirmSave(activity)
+            val parent = store.sites().single { it.id !in known }
+            assertEquals(setOf(inner.id, existing.id), store.children(parent.id).map(Site::id).toSet())
+            assertEquals(inner.id, store.site(innerPoint.id)?.parentId)
+            assertNull(store.site(outside.id)?.parentId)
+
+            val point = Coordinate(57.0035, 40.0035)
+            root.icon(MapIcon.POINT).performClick()
+            map.onTap?.invoke(point, null)
+            root.icon(MapIcon.SET_POINT).performClick()
+            chooseFirstType()
+            confirmSave(activity)
+            assertEquals(inner.id, store.sites().single { it.anchor == point && !it.area }.parentId)
+        } finally {
+            controller.pause().stop().destroy()
+        }
+    }
+
     @Test fun coordinatesCopyTheCenterThenThePointSelectedByTap() {
         MapTiles.get(org.robolectric.RuntimeEnvironment.getApplication()).coordinatesAtDevice = false
         val controller = Robolectric.buildActivity(MainActivity::class.java).setup()

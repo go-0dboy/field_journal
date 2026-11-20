@@ -363,10 +363,16 @@ internal fun Site.containsGeometry(points: List<Coordinate>, innerRings: List<Li
     if (boundaries.any { ring -> ring.indices.any { i ->
             childEdges.any { (a, b) -> segmentsMeet(ring[i], ring[(i + 1) % ring.size], a, b) }
         } }) return false
+    val childHoles = innerRings.map { it.map(::plane) }
     return boundaries.drop(1).none { hole ->
-        contains(hole, child.first()) ||
-            (child.size > 1 && contains(child, hole.first()) &&
-                innerRings.none { contains(it.map(::plane), hole.first()) })
+        contains(hole, child.first()) || (child.size > 1 && contains(child, hole.first()) &&
+            childHoles.none { childHole ->
+                contains(childHole, hole.first()) && hole.indices.none { i ->
+                    childHole.indices.any { j ->
+                        segmentsMeet(hole[i], hole[(i + 1) % hole.size], childHole[j], childHole[(j + 1) % childHole.size])
+                    }
+                }
+            })
     }
 }
 

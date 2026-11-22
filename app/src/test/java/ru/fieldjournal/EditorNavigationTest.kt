@@ -85,6 +85,11 @@ class EditorNavigationTest {
             assertEquals(listOf(siteLink), restored.store.site(site.id)?.links)
 
             restored.createNote(site.id, compact = true)
+            restoredRoot.assertNoteSections("Короткая заметка")
+            assertFalse(restoredRoot.input("Автор / группа").isShown)
+            restoredRoot.text("Дополнительные поля").performClick()
+            assertTrue(restoredRoot.input("Автор / группа").isShown)
+            restoredRoot.input("Автор / группа").setText("Полевая группа")
             val noteBody = "Схема https://example.org/map"
             restoredRoot.input("Короткая заметка").setText(noteBody)
             layout(restoredRoot)
@@ -106,6 +111,7 @@ class EditorNavigationTest {
             val saved = restored.store.notes().single { it.siteId == site.id }
             assertEquals(noteBody, saved.body)
             assertEquals(listOf(noteLink), saved.links)
+            assertEquals("Полевая группа", saved.author)
         } finally {
             controller.pause().stop().destroy()
         }
@@ -116,7 +122,7 @@ class EditorNavigationTest {
         try {
             val activity = controller.get()
             val site = Site(title = "Стоянка у реки", vertices = listOf(Coordinate(59.0, 33.0)))
-            val note = Note(title = "Первый обход", siteId = site.id)
+            val note = Note(title = "Первый обход", siteId = site.id, author = "Группа разведки", weather = "Ясно")
             activity.store.save(site)
             activity.store.save(note)
             activity.openSite(site.id)
@@ -126,6 +132,9 @@ class EditorNavigationTest {
 
             val root = controller.get().window.decorView
             root.text("Запись дневника")
+            root.assertNoteSections("Маршрут, работы и наблюдения")
+            assertEquals(note.author, root.input("Автор / группа").text.toString())
+            assertEquals(note.weather, root.input("Погода и условия работ").text.toString())
             root.action("Назад").performClick()
             root.text("Карточка объекта")
             assertEquals(site.title, root.input("Название").text.toString())
@@ -501,6 +510,17 @@ class EditorNavigationTest {
     }
 
     private fun top(view: View) = IntArray(2).also(view::getLocationOnScreen)[1]
+
+    private fun View.assertNoteSections(bodyHint: String) {
+        val sections = listOf(
+            text("Описание"), input("Заголовок"), input(bodyHint), text("Ссылки"),
+            text("Фотографии и материалы"), text("Учёт и источники"),
+            input("Автор / группа"), input("Погода и условия работ")
+        )
+        val views = descendants().toList()
+        val positions = sections.map(views::indexOf)
+        assertTrue(positions.zipWithNext().all { (earlier, later) -> earlier < later })
+    }
 
     private fun View.action(description: String) = descendants().first { it.contentDescription == description }
     private fun View.text(value: String) = descendants().filterIsInstance<TextView>().first { it.text == value }

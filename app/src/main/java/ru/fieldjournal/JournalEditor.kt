@@ -455,11 +455,11 @@ internal class JournalEditor(
         }
     }
 
-    private fun noteDetails(value: Note, parent: LinearLayout) {
+    private fun noteMetadata(created: Long, parent: LinearLayout) {
         parent.addView(activity.vertical().apply {
             background = activity.panel(Palette.pale, 15)
             setPadding(activity.dp(12), activity.dp(12), activity.dp(12), activity.dp(12))
-            addView(activity.action(dateLabel(value.created)) { }.apply {
+            addView(activity.action(dateLabel(created)) { }.apply {
                 setOnClickListener { pickDate(this) }
             }, -1, -2)
             addSpace(6)
@@ -468,7 +468,6 @@ internal class JournalEditor(
             }, -1, -2)
         }, -1, -2)
         parent.addSpace(8)
-        field("title", "Заголовок", value.title, parent = parent)
     }
 
     private fun buildNote(value: Note) {
@@ -482,28 +481,32 @@ internal class JournalEditor(
                 dateLabel(value.created)
             ).joinToString(" · ")
             body.addView(activity.label(context, 14f, Palette.heading, true))
-            body.addSpace(8)
+        } else {
+            noteMetadata(value.created, body)
+        }
+
+        section("Описание")
+        field("title", "Заголовок", value.title)
+        if (draft.compact) {
             field("body", "Короткая заметка", value.body, 3, withLinks = true)
-            addLinks()
-            addMedia()
-            body.addSpace(12)
+        } else {
+            field("body", "Маршрут, работы и наблюдения", value.body, 7, withLinks = true)
+        }
+        addLinks()
+        addMedia()
+        section("Учёт и источники")
+        val accounting = if (draft.compact) {
             val details = activity.vertical().apply { visibility = View.GONE }
             body.addView(activity.action("Дополнительные поля") {
                 details.visibility = if (details.visibility == View.GONE) View.VISIBLE else View.GONE
             }, -1, -2)
             body.addSpace(8)
-            noteDetails(value, details)
-            field("author", "Автор / группа", value.author, parent = details)
-            field("weather", "Погода и условия работ", value.weather, parent = details)
+            noteMetadata(value.created, details)
             body.addView(details, -1, -2)
-        } else {
-            noteDetails(value, body)
-            field("body", "Маршрут, работы и наблюдения", value.body, 7, withLinks = true)
-            addLinks()
-            field("author", "Автор / группа", value.author)
-            field("weather", "Погода и условия работ", value.weather)
-            addMedia()
-        }
+            details
+        } else body
+        field("author", "Автор / группа", value.author, parent = accounting)
+        field("weather", "Погода и условия работ", value.weather, parent = accounting)
     }
 
     private fun pickDate(button: TextView) {

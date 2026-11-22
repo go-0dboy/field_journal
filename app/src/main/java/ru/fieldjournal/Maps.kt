@@ -196,6 +196,39 @@ internal class MapTiles(context: Context) {
         }
     }
 
+    data class Coverage(val slot: MapPackage, val zoom: Int, val native: Int, val enlarged: Int, val missing: List<Coordinate>)
+
+    fun coverage(points: List<Coordinate>, zooms: List<Int>, slots: List<MapPackage>): List<Coverage> = synchronized(packageLock) {
+        fun tile(point: Coordinate, zoom: Int): Tile {
+            val count = 1 shl zoom
+            return Tile(zoom, (((point.longitude + 180) / 360) * count).toInt().coerceIn(0, count - 1),
+                (mercator(point.latitude) * count).toInt().coerceIn(0, count - 1))
+        }
+        slots.distinct().flatMap { slot ->
+            val archive = offlinePackage(slot)?.archive
+            zooms.map { zoom ->
+                var native = 0
+                var enlarged = 0
+                val missing = mutableListOf<Coordinate>()
+                for (point in points.distinctBy { tile(it, zoom) }) {
+                    val key = tile(point, zoom)
+                    if (archive == null) { missing += point; continue }
+                    val info = archive.info
+                    val hit = (min(zoom, info.maxZoom) downTo max(info.minZoom, zoom - 7)).firstOrNull { z ->
+                        val shift = zoom - z
+                        archive.tile(Tile(z, key.x shr shift, key.y shr shift)) != null
+                    }
+                    when (hit) {
+                        zoom -> native++
+                        null -> missing += point
+                        else -> enlarged++
+                    }
+                }
+                Coverage(slot, zoom, native, enlarged, missing)
+            }
+        }
+    }
+
     private fun readOffline(slot: MapPackage, tile: Tile): Bitmap? {
         return synchronized(packageLock) {
             val archive = offlinePackage(slot)?.archive ?: return@synchronized null

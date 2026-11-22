@@ -13,7 +13,8 @@ import android.os.SystemClock
 
 internal data class LocationFix(
     val point: Coordinate, val accuracy: Double, val altitude: Double?,
-    val elapsedMs: Long, val measuredAt: Long = System.currentTimeMillis()
+    val elapsedMs: Long, val measuredAt: Long = System.currentTimeMillis(),
+    val provider: String? = null, val verticalAccuracy: Double? = null
 )
 
 internal class FieldLocation(private val context: Context, private val onFix: (LocationFix) -> Unit) {
@@ -67,6 +68,7 @@ internal class FieldLocation(private val context: Context, private val onFix: (L
         best = location
         onFix(LocationFix(Coordinate(location.latitude, location.longitude), location.accuracy.toDouble(),
             location.altitude.takeIf { location.hasAltitude() && it.isFinite() }, elapsed,
-            location.time.takeIf { it > 0 } ?: System.currentTimeMillis()))
+            location.time.takeIf { it > 0 } ?: System.currentTimeMillis(), location.provider,
+            if (location.hasVerticalAccuracy()) location.verticalAccuracyMeters.toDouble() else null))
     }
 }

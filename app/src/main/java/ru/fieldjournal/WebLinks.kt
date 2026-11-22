@@ -71,15 +71,42 @@ internal fun Editable.showWebLinks(open: (String) -> Unit) {
     }
 }
 
+private class ShortAddressSpan(private val title: String, private val color: Int) : android.text.style.ReplacementSpan() {
+    override fun getSize(paint: android.graphics.Paint, text: CharSequence, start: Int, end: Int,
+        fm: android.graphics.Paint.FontMetricsInt?): Int = kotlin.math.ceil(paint.measureText(title)).toInt()
+
+    override fun draw(canvas: android.graphics.Canvas, text: CharSequence, start: Int, end: Int,
+        x: Float, top: Int, y: Int, bottom: Int, paint: android.graphics.Paint) {
+        val styled = android.graphics.Paint(paint).apply { color = this@ShortAddressSpan.color; isUnderlineText = true }
+        canvas.drawText(title, x, y.toFloat(), styled)
+    }
+}
+
 @SuppressLint("ClickableViewAccessibility")
 internal fun EditText.enableWebLinkTaps(open: (String) -> Unit) {
     setLinkTextColor(Palette.accent)
+    fun compact(value: Editable) {
+        value.getSpans(0, value.length, ShortAddressSpan::class.java).forEach(value::removeSpan)
+        if (isFocused) return
+        for ((range, uri) in webAddresses(value)) {
+            if (range.last - range.first + 1 < 55) continue
+            val title = when {
+                uri.host == "creativecommons.org" && uri.path?.contains("/by-sa/4.0") == true -> "Лицензия CC BY-SA 4.0"
+                uri.host == "ru.wikivoyage.org" -> uri.lastPathSegment?.replace('_', ' ')?.takeIf { it.length <= 21 }
+                    ?.let { "Викигид · $it" } ?: "Викигид"
+                else -> uri.host.orEmpty().removePrefix("www.").take(26)
+            }
+            value.setSpan(ShortAddressSpan(title, Palette.accent), range.first, range.last + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+    }
     text.showWebLinks(open)
+    compact(text)
+    onFocusChangeListener = View.OnFocusChangeListener { _, _ -> compact(text) }
     addTextChangedListener(object : TextWatcher {
         override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
         override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
         override fun afterTextChanged(s: Editable?) {
-            s?.showWebLinks(open)
+            s?.let { it.showWebLinks(open); compact(it) }
         }
     })
     fun linkAt(event: MotionEvent): JournalLinkSpan? {
@@ -90,6 +117,14 @@ internal fun EditText.enableWebLinkTaps(open: (String) -> Unit) {
         val x = event.x - totalPaddingLeft + scrollX
         if (x < textLayout.getLineLeft(line) || x >= textLayout.getLineRight(line)) return null
         val offset = textLayout.getOffsetForHorizontal(line, x)
+        for (span in text.getSpans(0, text.length, ShortAddressSpan::class.java)) {
+            val start = text.getSpanStart(span)
+            if (textLayout.getLineForOffset(start) != line) continue
+            val left = textLayout.getPrimaryHorizontal(start)
+            if (x >= left && x <= left + span.getSize(paint, text, start, text.getSpanEnd(span), null)) {
+                return text.getSpans(start, start + 1, JournalLinkSpan::class.java).firstOrNull()
+            }
+        }
         return text.getSpans(offset, offset, JournalLinkSpan::class.java).firstOrNull {
             offset < text.getSpanEnd(it)
         }

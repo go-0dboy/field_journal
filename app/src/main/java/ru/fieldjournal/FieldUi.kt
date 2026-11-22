@@ -255,13 +255,13 @@ internal class CatalogRow(context: Context) : LinearLayout(context) {
         }, -1, -2)
     }
 
-    fun bind(site: Site, parentTitle: String? = null) {
-        type = site.symbol
+    fun bind(site: CatalogEntry) {
+        type = objectType(site.type).let { symbol -> site.color?.let { symbol.copy(color = it) } ?: symbol }
         symbol.invalidate()
         title.text = site.title
-        detail.text = listOfNotNull(type.title, site.period.ifBlank { null },
-            if (site.area) areaLabel(areaSquareMeters(site.vertices)) else null, parentTitle).joinToString(" · ")
+        detail.text = listOf(type.title, site.subtitle, site.parentTitle.orEmpty()).filter(String::isNotBlank).joinToString(" · ")
     }
+
 }
 
 internal enum class FieldIcon(val description: String, val addsItem: Boolean = false) {
@@ -270,6 +270,7 @@ internal enum class FieldIcon(val description: String, val addsItem: Boolean = f
     AREA("Добавить область", true),
     COORDINATES("Координаты"),
     GPS_POINT("Отметить здесь по GPS", true),
+    GPS_VERTEX("Добавить вершину по GPS", true),
     LAYERS("Слои"),
     SET_POINT("Установить точку"),
     DONE_AREA("Готово"),
@@ -550,7 +551,7 @@ private class FieldIconDrawable(
                 line(5f, 12f, 19f, 12f)
                 if (icon == FieldIcon.ZOOM_IN) line(12f, 5f, 12f, 19f)
             }
-            FieldIcon.LOCATION, FieldIcon.GPS_POINT -> {
+            FieldIcon.LOCATION, FieldIcon.GPS_POINT, FieldIcon.GPS_VERTEX -> {
                 circle(12f, 12f, 8f)
                 line(12f, 1f, 12f, 4f)
                 line(12f, 20f, 12f, 23f)

@@ -145,7 +145,7 @@ class EditorNavigationTest {
             assertFalse(controller.get().store.notes().any { it.title == "Повторный обход" })
             chooseConfirmation("Сохранить")
             root.text("Карточка объекта")
-            root.text("Сохранено")
+            root.text("Сохранено · Стоянка у реки")
             assertTrue(controller.get().store.notes().any { it.siteId == site.id && it.title == "Повторный обход" })
         } finally {
             controller.pause().stop().destroy()

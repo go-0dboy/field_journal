@@ -84,6 +84,51 @@ internal fun MainActivity.openPhotoGallery(photos: List<Attachment>, start: Int)
     display()
 }
 
+internal fun MainActivity.compareObservationPhotos(siteId: String) {
+    val byDate = store.noteSummaries(siteId).mapNotNull { store.note(it.id) }.flatMap { note ->
+        note.attachments.filter { it.mime.startsWith("image/") }.map { file ->
+            val record = note.research.entries.firstOrNull { it.kind == "media" && it.fields["original"] == file.id }
+            val context = listOfNotNull(record?.fields?.get("station"), record?.fields?.get("direction"))
+            Triple(file, "${dateLabel(note.created)} · ${note.title}", context.joinToString(" · "))
+        }
+    }
+    fieldworkSheet("Сравнение снимков осмотров") { _ ->
+        if (byDate.size < 2) {
+            addView(label("Сделайте снимки хотя бы в двух наблюдениях или добавьте второй кадр", 14f, Palette.muted))
+            return@fieldworkSheet
+        }
+        fun choose(caption: String, value: (Int) -> Unit) {
+            android.app.AlertDialog.Builder(this@compareObservationPhotos).setTitle(caption)
+                .setItems(byDate.map { "${it.second} · ${it.first.name} · ${it.third}" }.toTypedArray()) { _, index ->
+                    value(index)
+                }.setPositiveButton("Отмена", null).show()
+        }
+        val selection = vertical()
+        addView(selection, -1, -2)
+        var top = 0
+        var bottom = 1
+        fun redraw() {
+            selection.removeAllViews()
+            listOf(top, bottom).forEachIndexed { index, chosen ->
+                val (file, description, context) = byDate[chosen]
+                with(selection) {
+                    addView(label(description, 14f, Palette.heading, true))
+                    if (context.isNotEmpty()) addView(label(context, 13f, Palette.muted))
+                    addView(photoThumbnail(file) { openPhotoGallery(listOf(file), 0) }, -1, dp(142))
+                    addView(action("Выбрать ${if (index == 0) "верхний" else "нижний"} кадр") {
+                        choose("Снимки наблюдений") { value ->
+                            if (index == 0) top = value else bottom = value
+                            redraw()
+                        }
+                    }, -1, -2)
+                    addSpace(6)
+                }
+            }
+        }
+        redraw()
+    }
+}
+
 internal fun MainActivity.showSitePreview(site: Site) {
     val latest = store.latestObservation(site.id)
     val photos = (latest?.attachments.orEmpty() + site.attachments)
@@ -165,10 +210,20 @@ internal fun MainActivity.showTrips(list: LinearLayout) {
 private fun MainActivity.promptTripName() {
     fieldworkSheet("Новый выезд") { dialog ->
         val name = edit("Название выезда", "Выезд · ${java.time.LocalDate.now()}")
+        val profiles = listOf("Разведка", "Мониторинг", "Раскоп", "Историческое обследование")
+        var profile = profiles.first()
+        val mode = action(profile) { }
+        mode.setOnClickListener {
+            android.app.AlertDialog.Builder(this@promptTripName).setTitle("Профиль работ")
+                .setItems(profiles.toTypedArray()) { _, index -> profile = profiles[index]; mode.text = profile }
+                .setPositiveButton("Отмена", null).show()
+        }
         addView(name, -1, -2)
+        addSpace(5)
+        addView(mode, -1, -2)
         addSpace(10)
         addView(addAction("Начать выезд", FieldIcon.TRIP) {
-            runCatching { store.trips.start(name.text.toString().take(120)) }.onSuccess { trip ->
+            runCatching { store.trips.start(name.text.toString().take(120), profile = profile) }.onSuccess { trip ->
                 dialog.dismiss()
                 showTripDetails(trip.id)
             }.onFailure { message(it.message ?: "Не удалось начать выезд") }
@@ -186,6 +241,13 @@ internal fun MainActivity.showTripPage(list: LinearLayout, tripId: String) {
     list.addView(action("‹ Все выезды") { closeTripDetails() }, -1, -2)
     list.addSpace(10)
     list.addView(label(trip.title, 22f, Palette.heading, true))
+    list.addView(label(trip.profile, 14f, Palette.muted))
+    list.addView(action("Программа работ") {
+        editResearch("Программа работ", trip.research, null, tripProfile = trip.profile) {
+            store.trips.updateResearch(trip.copy(research = it))
+            refreshDiary()
+        }
+    }, -1, -2)
     list.addView(label("Начат · ${dateLabel(trip.startedAt)}", 13f, Palette.muted))
     trip.endedAt?.let { list.addView(label("Завершён · ${dateLabel(it)}", 13f, Palette.muted)) }
     list.addSpace(8)
@@ -206,6 +268,15 @@ internal fun MainActivity.showTripPage(list: LinearLayout, tripId: String) {
         if (hasRoute && showingTripTrack(trip.id)) hideTripTrack(trip.id) else showTripOnMap(trip.id)
     }
     list.addView(routeToggle, -1, -2)
+    if (contents.visits.isNotEmpty()) {
+        list.addSpace(8)
+        list.addView(action("Осмотры · ${contents.visits.size}") {
+            fieldworkSheet("Осмотры выезда") {
+                for (visit in contents.visits) addView(label(
+                    "${dateLabel(visit.time)} · ${visit.sites.firstOrNull()?.title ?: visit.siteId}", 14f, Palette.ink))
+            }
+        }, -1, -2)
+    }
     if (contents.sites.isNotEmpty()) {
         list.addSpace(10)
         list.addView(label("Посещённые объекты", 17f, Palette.heading, true))
@@ -218,6 +289,16 @@ internal fun MainActivity.showTripPage(list: LinearLayout, tripId: String) {
             confirm("Завершить выезд?", "Маршрут, посещения и записи будут доступны в истории выездов.") {
                 runCatching { finishTrip(trip.id) }.onSuccess { refreshDiary() }
                     .onFailure { message("Не удалось завершить выезд") }
+            }
+        }, -1, -2)
+    }
+    if (trip.endedAt != null) {
+        list.addSpace(8)
+        list.addView(action("Зафиксировать новую редакцию") {
+            confirm("Зафиксировать редакцию?", "Предыдущий комплект останется доступен в разделе «Данные».") {
+                runCatching { store.trips.recordEdition(trip.id) }
+                    .onSuccess { message("Сохранена редакция ${it.number}"); refreshDiary() }
+                    .onFailure { message(it.message ?: "Не удалось сохранить редакцию") }
             }
         }, -1, -2)
     }
@@ -256,10 +337,18 @@ internal fun MainActivity.chooseTripExport() {
                 addView(action("Маршрут GPX") { options.dismiss(); exportTrip(trip.id, forQgis = false) }
                     .apply { isEnabled = store.trips.points(trip.id).isNotEmpty() }, -1, -2)
                 addSpace(6)
-                addView(action("Комплект для QGIS", true) {
+                val contents = store.trips.contents(trip.id)
+                addView(label("Объекты · ${contents.sites.size} · записи · ${contents.notes.size} · осмотры · ${contents.visits.size}", 14f, Palette.muted))
+                val editions = if (trip.endedAt == null) emptyList() else store.trips.editions(trip.id)
+                if (editions.isEmpty()) addView(action("Комплект для QGIS", true) {
                     options.dismiss()
                     exportTrip(trip.id, forQgis = true)
                 }, -1, -2)
+                for (edition in editions.asReversed()) card(this, "QGIS · редакция ${edition.number}",
+                    "${dateLabel(edition.time)} · объектов ${edition.contents.sites.size} · записей ${edition.contents.notes.size} · осмотров ${edition.contents.visits.size}") {
+                    options.dismiss()
+                    exportTrip(trip.id, forQgis = true, edition = edition.number)
+                }
             }
         }
     }

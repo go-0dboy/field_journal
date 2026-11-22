@@ -67,7 +67,7 @@ class FieldTripsTest {
             }
             val photoPath = "media/${photo.id}.jpg"
             assertEquals(setOf("objects.geojson", "observations.csv", "attachments.csv", "track.gpx",
-                "trip.json", "README.txt", photoPath), files.keys)
+                "trip.json", "README.txt", "visits.csv", "visit_snapshots.json", "track_quality.csv", photoPath), files.keys)
             val feature = JSONObject(files.getValue("objects.geojson").decodeToString())
                 .getJSONArray("features").getJSONObject(0)
             assertEquals(site.id, feature.getJSONObject("properties").getString("site_id"))
@@ -94,7 +94,7 @@ class FieldTripsTest {
             val backup = ByteArrayOutputStream().also(store::exportBackup).toByteArray()
             store.deleteNote(note.id)
             store.deleteSite(site.id)
-            for (table in listOf("track_points", "trip_sites", "trips")) store.writableDatabase.delete(table, null, null)
+            for (table in listOf("track_points", "trip_sites", "trip_visits", "trip_editions", "trips")) store.writableDatabase.delete(table, null, null)
             assertEquals(ImportResult(1, 1, 0, 1), store.importBackup(backup.inputStream()))
             assertEquals(contents, store.trips.contents(trip.id))
             assertEquals("фотография", store.attachmentFile(photo.id).readText())

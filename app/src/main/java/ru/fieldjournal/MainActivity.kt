@@ -51,7 +51,7 @@ class MainActivity : Activity() {
     private var drawingParentId: String? = null
     private var hiddenTripId: String? = null
     private enum class DrawMode { NONE, POINT, AREA, MOVE_POINT, MOVE_AREA }
-    private enum class LocationAction { CENTER_MAP, SELECT_POINT, READOUT }
+    private enum class LocationAction { CENTER_MAP, SELECT_POINT, ADD_VERTEX, READOUT }
 
     private class IoTask(val title: String) {
         var onReady: (() -> Unit)? = null
@@ -117,6 +117,7 @@ class MainActivity : Activity() {
     private var selectedPoint: Coordinate? = null
     private var selectedMeasurement: LocationFix? = null
     private val vertices = mutableListOf<Coordinate>()
+    private val vertexMeasurements = mutableMapOf<Coordinate, LocationFix>()
     private var keyboardVisible = false
     private var catalogIndex = 0
     private var catalogOffset = 0
@@ -126,6 +127,8 @@ class MainActivity : Activity() {
     private var filter: String? = null
     private var tracking = false
     private var locationAction: LocationAction? = null
+    private val samples = mutableListOf<LocationFix>()
+    private var latestCapture: Long = -1
     private var fix: LocationFix? = null
     private var pendingOwner: String? = null
     private var pendingIsNote = false
@@ -139,6 +142,8 @@ class MainActivity : Activity() {
     private var trackTripId: String? = null
     private var pendingTripRecording: String? = null
     private var pendingTripExport: String? = null
+    private var pendingTripEdition: Int? = null
+    private var publicationDecimals: Int = 2
     private var refreshTripDetails: (() -> Unit)? = null
     private val trackChanged: (String?) -> Unit = { problem ->
         refreshTripTrack()
@@ -177,8 +182,18 @@ class MainActivity : Activity() {
                     it.getDouble("selectedAltitude", Double.NaN).takeIf(Double::isFinite),
                     0L, it.getLong("selectedTime"))
             }
-            it.getDoubleArray("vertices")?.toList()?.chunked(2)?.forEach { vertex ->
-                vertices.add(Coordinate(vertex[0], vertex[1]))
+            it.getString("vertexData")?.let { data ->
+                runCatching {
+                    org.json.JSONArray(data).objects().forEach { row ->
+                        val point = Coordinate.read(row.getJSONArray("point"))
+                        vertices.add(point)
+                        row.nullableDouble("accuracy")?.let { uncertainty ->
+                            vertexMeasurements[point] = LocationFix(point, uncertainty, row.nullableDouble("altitude"),
+                                0, row.getLong("time"), row.optString("provider").ifBlank { null },
+                                row.nullableDouble("vertical_accuracy"))
+                        }
+                    }
+                }
             }
             search = it.getString("search").orEmpty()
             catalogIndex = it.getInt("catalogIndex")
@@ -200,6 +215,8 @@ class MainActivity : Activity() {
             hiddenTripId = it.getString("hiddenTripId")
             pendingTripRecording = it.getString("pendingTripRecording")
             pendingTripExport = it.getString("pendingTripExport")
+            pendingTripEdition = it.getInt("pendingTripEdition", -1).takeIf { number -> number > 0 }
+            publicationDecimals = it.getInt("publicationDecimals", 2)
         }
 
         root = vertical().apply {
@@ -295,7 +312,14 @@ class MainActivity : Activity() {
             out.putDouble("selectedAltitude", it.altitude ?: Double.NaN)
             out.putLong("selectedTime", it.measuredAt)
         }
-        out.putDoubleArray("vertices", vertices.flatMap { listOf(it.latitude, it.longitude) }.toDoubleArray())
+        out.putString("vertexData", org.json.JSONArray(vertices.map { point ->
+            org.json.JSONObject().put("point", point.json()).apply {
+                vertexMeasurements[point]?.let {
+                    put("accuracy", it.accuracy); put("altitude", it.altitude); put("time", it.measuredAt)
+                    put("provider", it.provider); put("vertical_accuracy", it.verticalAccuracy)
+                }
+            }
+        }).toString())
         out.putString("search", search)
         rememberCatalogPosition()
         out.putInt("catalogIndex", catalogIndex)
@@ -316,6 +340,8 @@ class MainActivity : Activity() {
         out.putString("hiddenTripId", hiddenTripId)
         out.putString("pendingTripRecording", pendingTripRecording)
         out.putString("pendingTripExport", pendingTripExport)
+        out.putInt("pendingTripEdition", pendingTripEdition ?: -1)
+        out.putInt("publicationDecimals", publicationDecimals)
         map.historicalDivider?.let { out.putFloat("historicalDivider", it) }
         super.onSaveInstanceState(out)
     }
@@ -522,9 +548,20 @@ class MainActivity : Activity() {
                 DrawMode.NONE -> site?.let { showSitePreview(it) }
             }
         }
+        map.onOverlappingSites = { point, sites ->
+            if (drawMode == DrawMode.NONE) fieldworkSheet("Объекты в этой точке") { dialog ->
+                for (site in sites) card(this, site.title, site.inventory.ifBlank { site.symbol.title }) {
+                    dialog.dismiss()
+                    showSitePreview(site)
+                }
+            } else {
+                map.onTap?.invoke(point, null)
+            }
+        }
         map.onVertexTap = { index -> removeVertex(index) }
         map.onVertexMove = { index, point ->
             if (index in vertices.indices) {
+                vertexMeasurements.remove(vertices[index])
                 vertices[index] = point
                 updateMapDraft()
             }
@@ -533,9 +570,11 @@ class MainActivity : Activity() {
             setSingleLine(true)
             ellipsize = TextUtils.TruncateAt.END
             setPadding(dp(12), dp(3), dp(12), dp(3))
-            setShadowLayer(dp(2).toFloat(), 0f, 0f, Color.WHITE)
+            setShadowLayer(dp(3).toFloat(), 0f, 0f, Color.WHITE)
         }
         mapCoordinates = mapCaption(12f).apply {
+            if (android.os.Build.VERSION.SDK_INT >= 26) setAutoSizeTextTypeUniformWithConfiguration(10, 18, 1,
+                android.util.TypedValue.COMPLEX_UNIT_SP)
             typeface = Typeface.create("monospace", Typeface.BOLD)
         }
         mapArea = mapCaption(12f)
@@ -596,7 +635,7 @@ class MainActivity : Activity() {
     }
 
     private fun refreshMap() {
-        map.sites = store.sites().filter { filter == null || it.type == filter }
+        map.sites = store.locatedSites().filter { filter == null || it.type == filter }
         map.locate = fix
         updateMapDraft()
     }
@@ -651,14 +690,15 @@ class MainActivity : Activity() {
 
     private fun addVertex(point: Coordinate) {
         if (vertices.size >= 2000) return message("Достигнут предел: 2000 вершин")
-        if (point in vertices) return message("Такая вершина уже добавлена")
+        if (vertices.any { it.latitude == point.latitude && it.longitude == point.longitude })
+            return message("Такая вершина уже добавлена")
         vertices.add(point)
         updateMapDraft()
     }
 
     private fun removeVertex(index: Int) {
         if (index !in vertices.indices) return
-        vertices.removeAt(index)
+        vertexMeasurements.remove(vertices.removeAt(index))
         updateMapDraft()
     }
 
@@ -689,7 +729,7 @@ class MainActivity : Activity() {
                     control(FieldIcon.LAYERS) { chooseLayers() }
                     control(FieldIcon.COORDINATES) { showPointCoordinates() }
                     control(FieldIcon.GPS_POINT) {
-                        recentFix()?.let(::selectGpsPoint) ?: requestLocation(LocationAction.SELECT_POINT)
+                        captureLocation(LocationAction.SELECT_POINT)
                     }
                     spacer()
                     control(FieldIcon.SET_POINT, true) {
@@ -701,6 +741,9 @@ class MainActivity : Activity() {
                 DrawMode.AREA, DrawMode.MOVE_AREA -> {
                     control(FieldIcon.LAYERS) { chooseLayers() }
                     control(FieldIcon.ADD_VERTEX) { addVertex(map.center) }
+                    control(FieldIcon.GPS_VERTEX) {
+                        captureLocation(LocationAction.ADD_VERTEX)
+                    }
                     control(FieldIcon.UNDO_VERTEX) { removeVertex(vertices.lastIndex) }
                     spacer()
                     control(FieldIcon.DONE_AREA, true) {
@@ -800,12 +843,13 @@ class MainActivity : Activity() {
         dismissNotice()
         drawMode = DrawMode.NONE
         vertices.clear()
+        vertexMeasurements.clear()
         geometrySite = null
         geometryDraft = null
         drawingParentId = null
         selectedPoint = null
         selectedMeasurement = null
-        if (locationAction == LocationAction.SELECT_POINT) locationAction = null
+        if (locationAction == LocationAction.SELECT_POINT || locationAction == LocationAction.ADD_VERTEX) locationAction = null
         updateMapDraft()
     }
 
@@ -827,12 +871,30 @@ class MainActivity : Activity() {
         points: List<Coordinate>, fix: LocationFix? = null,
         origin: CoordinateOrigin = if (fix == null) CoordinateOrigin.MAP else CoordinateOrigin.DEVICE
     ) {
+        val recordedMeasurements = points.mapIndexedNotNull { index, point ->
+            (if (points.size == 1) fix else vertexMeasurements[point])?.let { measurement ->
+                ResearchEntry(kind = "survey", fields = buildMap {
+                    put("number", "Вершина ${index + 1}")
+                    put("method", measurement.provider ?: "Геолокация Android")
+                    put("instrument", "Телефон")
+                    put("measured_at", dateLabel(measurement.measuredAt))
+                    put("crs", "WGS 84")
+                    put("xyz", point.display() + (measurement.altitude?.let { " · $it м" } ?: ""))
+                    if (measurement.altitude != null) put("height_system", "Эллипсоид WGS 84")
+                    put("accuracy", "${measurement.accuracy} м" +
+                        (measurement.verticalAccuracy?.let { " · по высоте $it м" } ?: ""))
+                })
+            }
+        }
         val original = geometryDraft ?: geometrySite?.let(store::site)?.let { EditorDraft(site = it) }
         if (original != null) {
             val site = requireNotNull(original.site)
-            val updated = if (site.vertices == points && fix == null) site else site.copy(
+            val updated = if (site.vertices == points && recordedMeasurements.isEmpty()) site else site.copy(
                 vertices = points, holes = emptyList(), accuracy = fix?.accuracy, altitude = fix?.altitude,
-                coordinateOrigin = origin, measuredAt = fix?.measuredAt
+                coordinateOrigin = origin, measuredAt = fix?.measuredAt,
+                research = site.research.copy(fields = site.research.fields + ("location_status" to
+                    if (fix != null || recordedMeasurements.isNotEmpty()) "Проверен в поле" else "Ориентир по источнику"),
+                    entries = site.research.entries + recordedMeasurements)
             )
             resetDraw()
             openDraft(original.copy(site = updated, dirty = original.dirty || updated != site))
@@ -845,7 +907,9 @@ class MainActivity : Activity() {
         }
         chooseType("Условный знак объекта") { type ->
             val geometry = Site(title = type.title, type = type.id, vertices = points,
-                accuracy = fix?.accuracy, altitude = fix?.altitude, coordinateOrigin = origin, measuredAt = fix?.measuredAt)
+                accuracy = fix?.accuracy, altitude = fix?.altitude, coordinateOrigin = origin, measuredAt = fix?.measuredAt,
+                research = ResearchCard(fields = if (recordedMeasurements.isNotEmpty()) mapOf("location_status" to "Проверен в поле")
+                    else emptyMap(), entries = recordedMeasurements))
             val site = geometry.copy(parentId = parent?.id ?: store.groupCandidates(geometry).firstOrNull()?.id)
             resetDraw()
             previousTab = tab
@@ -878,11 +942,14 @@ class MainActivity : Activity() {
         map.show(site)
         geometryDraft = draft
         geometrySite = site.id
-        if (site.area) vertices.addAll(site.vertices) else selectedPoint = site.anchor
+        if (site.area) vertices.addAll(site.vertices) else selectedPoint = site.takeIf(Site::located)?.anchor
         beginDraw(if (site.area) DrawMode.MOVE_AREA else DrawMode.MOVE_POINT)
     }
 
+    internal fun centerForPicker(): Coordinate = recentFix()?.point ?: map.center
+
     internal fun showOnMap(site: Site) {
+        if (!site.located) return
         confirmBeforeLeaving {
             draftFile.delete()
             detachEditor()
@@ -949,6 +1016,56 @@ class MainActivity : Activity() {
         updateMapStatus()
     }
 
+    private fun captureLocation(action: LocationAction) {
+        samples.clear()
+        latestCapture = -1
+        val sampling = store.setting("survey_preferences")?.optInt("samples", 1) ?: 1
+        val cached = recentFix()
+        if (sampling == 1 && cached != null) {
+            if (meetsAccuracy(cached)) if (action == LocationAction.ADD_VERTEX) addMeasuredVertex(cached) else selectGpsPoint(cached)
+        } else requestLocation(action)
+    }
+
+    private fun meetsAccuracy(value: LocationFix): Boolean {
+        val maximum = store.setting("survey_preferences")?.optDouble("maximum", 0.0) ?: 0.0
+        if (maximum <= 0 || value.accuracy <= maximum) return true
+        message("Точность ±${value.accuracy.roundToInt()} м. Требуется не хуже ${maximum.roundToInt()} м")
+        return false
+    }
+
+    private fun processSurveyFix(action: LocationAction, value: LocationFix): Boolean {
+        if (!meetsAccuracy(value)) return false
+        if (value.elapsedMs <= latestCapture) return false
+        latestCapture = value.elapsedMs
+        val count = (store.setting("survey_preferences")?.optInt("samples", 1) ?: 1).coerceIn(1, 8)
+        samples += value
+        if (samples.size < count) {
+            message("Замеры · ${samples.size} из $count")
+            return false
+        }
+        val longitude = value.point.longitude + samples.map { longitudeDelta(it.point.longitude, value.point.longitude) }.average()
+        val location = Coordinate(samples.map { it.point.latitude }.average(), ((longitude + 540) % 360) - 180)
+        val heights = samples.mapNotNull(LocationFix::altitude)
+        val captured = if (count == 1) value else value.copy(point = location,
+            altitude = heights.takeIf { it.size == count }?.average(),
+            accuracy = samples.maxOf(LocationFix::accuracy), provider = "Усреднение $count замеров Android",
+            verticalAccuracy = samples.mapNotNull(LocationFix::verticalAccuracy).takeIf { it.size == count }?.maxOrNull())
+        samples.clear()
+        if (action == LocationAction.ADD_VERTEX) addMeasuredVertex(captured) else selectGpsPoint(captured)
+        return true
+    }
+
+    private fun addMeasuredVertex(value: LocationFix) {
+        if (drawMode != DrawMode.AREA && drawMode != DrawMode.MOVE_AREA) return
+        val point = value.point.copy(elevation = value.altitude)
+        val count = vertices.size
+        addVertex(point)
+        if (vertices.size != count) {
+            vertexMeasurements[point] = value
+            message("Вершина по GPS · ±${value.accuracy.roundToInt()} м")
+        }
+    }
+
     private fun selectGpsPoint(value: LocationFix) {
         if (drawMode != DrawMode.POINT && drawMode != DrawMode.MOVE_POINT) return
         selectedPoint = value.point
@@ -968,7 +1085,12 @@ class MainActivity : Activity() {
         map.locate = value
         when (locationAction) {
             LocationAction.CENTER_MAP -> map.moveTo(value.point, maxOf(map.zoom, if (value.accuracy < 200) 16.0 else 12.0))
-            LocationAction.SELECT_POINT -> selectGpsPoint(value)
+            LocationAction.SELECT_POINT, LocationAction.ADD_VERTEX -> {
+                if (!processSurveyFix(requireNotNull(locationAction), value)) {
+                    updateMapStatus()
+                    return
+                }
+            }
             LocationAction.READOUT, null -> Unit
         }
         locationAction = null
@@ -1153,6 +1275,10 @@ class MainActivity : Activity() {
                     toggleOffline()
                     redrawControls()
                 }, -1, -2)
+                controls.addView(action("Проверить покрытие офлайн") {
+                    dialog.dismiss()
+                    checkOfflineCoverage()
+                }, -1, -2)
                 controls.addView(action("Настройки карт") {
                     dialog.dismiss()
                     switch(Tab.SETTINGS)
@@ -1160,6 +1286,32 @@ class MainActivity : Activity() {
             }
 
             redrawControls()
+        }
+    }
+
+    private fun checkOfflineCoverage() {
+        val points = map.coverageSamples()
+        val zoom = map.zoom.roundToInt().coerceIn(0, 22)
+        val zooms = listOf((zoom - 2).coerceAtLeast(0), zoom, (zoom + 2).coerceAtMost(22)).distinct()
+        val slots = listOfNotNull(tiles.baseArchive(tiles.layer),
+            MapPackage.HISTORICAL.takeIf { tiles.historicalEnabled },
+            MapPackage.REFERENCES.takeIf { tiles.layer == MapLayer.HYBRID && tiles.info(it) != null })
+        withIo("Проверка локальных карт", { tiles.coverage(points, zooms, slots) }) { checks ->
+            fieldworkSheet("Покрытие видимой области") { dialog ->
+                addView(label("Выборочная проверка по сетке 5 × 5. Увеличенные фрагменты показываются отдельно.", 14f, Palette.muted))
+                for (check in checks) {
+                    val name = tiles.info(check.slot)?.name ?: "Слой без пакета"
+                    addSpace(8)
+                    addView(label("$name · масштаб ${check.zoom}", 15f, Palette.heading, true))
+                    addView(label("Свои фрагменты · ${check.native}   Увеличенные · ${check.enlarged}   Пробелы · ${check.missing.size}",
+                        14f, Palette.ink))
+                    if (check.missing.isNotEmpty()) addView(action("Показать ближайший пробел") {
+                        dialog.dismiss()
+                        map.moveTo(check.missing.minBy { kotlin.math.abs(it.latitude - map.center.latitude) +
+                            kotlin.math.abs(longitudeDelta(it.longitude, map.center.longitude)) }, check.zoom.toDouble())
+                    }, -1, -2)
+                }
+            }
         }
     }
 
@@ -1200,9 +1352,12 @@ class MainActivity : Activity() {
         catalogOffset = 0
     }
 
+    private var catalogResearchFilter = ""
+    private var diarySearch = ""
+
     private fun showSites() {
         val panel = vertical().apply { setPadding(dp(14), dp(5), dp(14), dp(8)) }
-        val query = edit("Поиск по названию и описанию", search)
+        val query = edit("Название, номер, место или источник", search)
         val controls = horizontal()
         controls.addView(action(filter?.let { objectType(it).title } ?: "Все типы") { chooseFilter() },
             LinearLayout.LayoutParams(0, -2, 1f))
@@ -1211,6 +1366,14 @@ class MainActivity : Activity() {
             resetCatalogPosition()
             render()
         })
+        controls.addView(action(catalogResearchFilter.ifBlank { "Уточнить" }) {
+            val statuses = arrayOf("Все привязки", "Не локализован", "Ориентир по источнику", "Проверен в поле")
+            AlertDialog.Builder(this).setTitle("Состояние привязки").setItems(statuses) { _, index ->
+                catalogResearchFilter = if (index == 0) "" else statuses[index]
+                resetCatalogPosition()
+                render()
+            }.setPositiveButton("Отмена", null).show()
+        }, LinearLayout.LayoutParams(0, -2, 1f))
         val count = label("", 14f, Palette.muted).apply {
             setPadding(dp(3), dp(7), dp(3), dp(7))
             accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
@@ -1225,38 +1388,39 @@ class MainActivity : Activity() {
             addView(results, FrameLayout.LayoutParams(-1, -1))
             addView(emptyState, FrameLayout.LayoutParams(-1, -2))
         }
-        val sites = store.sites()
-        val titles = sites.associate { it.id to it.title }
-        val catalog = sites.filter { filter == null || it.type == filter }
-        var matches = catalog
+        var pageSize = 160
+        var matches = emptyList<CatalogEntry>()
+        val more = action("Показать ещё") { }
         val adapter = object : BaseAdapter() {
             override fun getCount() = matches.size
             override fun getItem(position: Int) = matches[position]
             override fun getItemId(position: Int) = position.toLong()
-            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
-                return ((convertView as? CatalogRow) ?: CatalogRow(this@MainActivity)).apply {
-                    val site = getItem(position)
-                    bind(site, site.parentId?.let(titles::get))
-                }
-            }
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View =
+                ((convertView as? CatalogRow) ?: CatalogRow(this@MainActivity)).apply { bind(getItem(position)) }
         }
         results.adapter = adapter
         results.setOnItemClickListener { _, _, position, _ -> openSite(adapter.getItem(position).id) }
         fun showMatches() {
-            val input = search.trim()
-            matches = if (input.isEmpty()) catalog else catalog.filter { site ->
-                listOf(site.title, objectType(site.type).title, site.period, site.culture,
-                    site.description, site.inventory, site.sources, titles[site.parentId].orEmpty()).any { it.contains(input, true) }
-            }
+            val page = store.catalogPage(search, filter, catalogResearchFilter.ifBlank { null }, pageSize + 1)
+            matches = page.take(pageSize)
             adapter.notifyDataSetChanged()
-            count.text = "Объекты · ${matches.size}"
+            count.text = "Показано · ${matches.size}"
+            more.visibility = if (page.size > pageSize) View.VISIBLE else View.GONE
             emptyState.removeAllViews()
             if (matches.isEmpty()) empty(emptyState, "Объекты не найдены",
-                if (input.isEmpty() && filter == null) "Поставьте точку на карте или обведите границы участка."
-                else "Измените поиск или фильтр по типу.")
+                if (search.isBlank() && filter == null) "Создайте объект на карте или отдельно в каталоге."
+                else "Измените поиск или фильтры.")
         }
+        more.setOnClickListener { pageSize += 160; showMatches() }
+        panel.addView(addAction("Объект без координат", FieldIcon.POINT, primary = false) {
+            chooseType("Условный знак объекта") { type ->
+                previousTab = tab
+                openDraft(EditorDraft(site = Site(title = type.title, type = type.id, vertices = emptyList()), isNew = true))
+            }
+        }, -1, -2)
         query.watch {
             search = it
+            pageSize = 160
             showMatches()
             results.setSelection(0)
         }
@@ -1265,6 +1429,7 @@ class MainActivity : Activity() {
         panel.addView(controls, -1, -2)
         panel.addView(count)
         panel.addView(resultsPanel, LinearLayout.LayoutParams(-1, 0, 1f))
+        panel.addView(more, -1, -2)
         content.addView(panel)
         root.requestFocus()
         showMatches()
@@ -1321,15 +1486,20 @@ class MainActivity : Activity() {
                 card(loading, trip.title, "Текущий выезд · новые записи относятся к нему") { showTripDetails(trip.id) }
             }
         }
+        val query = edit("Поиск в записях", diarySearch)
+        loading.addView(query, -1, -2)
+        loading.addSpace(8)
         val records = vertical()
         val status = label("Загрузка записей…", 14f, Palette.muted)
         records.addView(status)
         loading.addView(records, LinearLayout.LayoutParams(-1, 0, 1f))
         val journal = store
-        diaryReads.execute {
-            val rows = runCatching { journal.noteSummaries(tripId = filter?.id) }
+        fun loadRecords() {
+            val term = diarySearch
+            diaryReads.execute {
+            val rows = runCatching { journal.noteSummaries(tripId = filter?.id, query = term.trim()) }
             handler.post {
-                if (isDestroyed || loading.parent !== content) return@post
+                if (isDestroyed || loading.parent !== content || term != diarySearch) return@post
                 rows.onSuccess { notes ->
                     records.removeAllViews()
                     if (notes.isEmpty()) {
@@ -1351,7 +1521,10 @@ class MainActivity : Activity() {
                     }
                 }.onFailure { status.text = "Не удалось загрузить дневник" }
             }
+            }
         }
+        query.watch { diarySearch = it; loadRecords() }
+        loadRecords()
     }
 
     internal fun refreshDiary() {
@@ -1435,7 +1608,7 @@ class MainActivity : Activity() {
         if (store.trips.get(id) == null) return message("Выезд не найден")
         val contents = store.trips.contents(id)
         val route = contents.points.map(TrackPoint::point)
-        val points = route.ifEmpty { contents.sites.map(Site::anchor) }
+        val points = route.ifEmpty { contents.sites.filter(Site::located).map(Site::anchor) }
         if (points.isEmpty()) {
             message("В этом выезде пока нет точек маршрута и объектов")
             return
@@ -1474,11 +1647,12 @@ class MainActivity : Activity() {
         if (TripRecording.tripId == id) TripRecordingService.pause(this)
     }
 
-    internal fun exportTrip(id: String, forQgis: Boolean) {
+    internal fun exportTrip(id: String, forQgis: Boolean, edition: Int? = null) {
         val trip = store.trips.get(id) ?: return
         val name = trip.title.replace(Regex("""[^\p{L}\p{N}._ -]"""), "_").trim().take(80).ifBlank { "Выезд" }
         pendingTripExport = id
-        if (forQgis) exportDocument(TRIP_KIT, "application/zip", "$name.zip")
+        pendingTripEdition = edition
+        if (forQgis) exportDocument(TRIP_KIT, "application/zip", "$name${edition?.let { "-редакция-$it" }.orEmpty()}.zip")
         else exportDocument(TRIP_GPX, "application/gpx+xml", "$name.gpx")
     }
 
@@ -1569,15 +1743,154 @@ class MainActivity : Activity() {
                 pickDocument(request, "*/*")
             }
         }
+        row(maps, "Точность полевых замеров", "Допуск и усреднение GPS для точки или вершины") {
+            val old = store.setting("survey_preferences")
+            editStructuredFields("Точность полевых замеров",
+                linkedMapOf("maximum" to "Допустимая погрешность в метрах (0 — без ограничения)", "samples" to "Число замеров (1–8)"),
+                mapOf("maximum" to (old?.optDouble("maximum", 0.0) ?: 0.0).toString(),
+                    "samples" to (old?.optInt("samples", 1) ?: 1).toString())) {
+                val accuracy = it["maximum"]?.replace(',', '.')?.toDoubleOrNull()
+                val count = it["samples"]?.toIntOrNull()
+                if (accuracy == null || !accuracy.isFinite() || accuracy < 0 || count == null || count !in 1..8) {
+                    message("Укажите допустимую погрешность от 0 и число замеров от 1 до 8")
+                } else store.saveSetting("survey_preferences", org.json.JSONObject().put("maximum", accuracy).put("samples", count))
+            }
+        }
+        row(maps, "Реквизиты исторической карты", "Год, лист, масштаб, архив и геопривязка") {
+            val old = store.setting("historical_map") ?: org.json.JSONObject()
+            editStructuredFields("Историческая карта", linkedMapOf("title" to "Название", "sheet" to "Лист",
+                "surveyed" to "Год съёмки", "published" to "Год издания", "scale" to "Масштаб оригинала",
+                "archive" to "Архивный шифр", "method" to "Метод геопривязки", "error" to "Точность привязки",
+                "url" to "Постоянный адрес"), old.keys().asSequence().associateWith(old::getString)) {
+                store.saveSetting("historical_map", org.json.JSONObject(it))
+            }
+        }
         row(maps, "Свой онлайн-источник XYZ",
             if (tiles.customUrl.isBlank()) "Карта по умолчанию · OpenStreetMap" else tiles.customCredit) { customSource() }
         val exchange = section("Обмен и резервные копии")
-        row(exchange, "Импорт ZIP или GeoJSON", "Существующие записи с теми же ID сохраняются") { pickDocument(IMPORT, "*/*") }
-        row(exchange, "Экспорт резервной копии", "ZIP · карточки, записи, выезды и вложения") { exportDocument(BACKUP, "application/zip", "field-journal-${shortDate()}.zip") }
+        row(exchange, "Импорт ZIP или GeoJSON", "Перенос базы и проверка состава GeoJSON") { pickDocument(IMPORT, "*/*") }
+        row(exchange, "Импорт регионального CSV", "Карточки с координатами и без них") { pickDocument(CATALOG_CSV, "*/*") }
+        row(exchange, "Разобрать таблицы из дневника", "Создать карточки из вложений археологического каталога") {
+            fieldPrompt("Создать карточки из таблиц?", PromptAction("Импортировать") {
+                withIo("Чтение региональных таблиц", { store.expandAttachedCatalog() }) { showImportResult(it) }
+            }, detail = "Будут добавлены отсутствующие ID. Региональные CSV сохранятся в записях.")
+        }
+        row(exchange, "Полная полевая копия", "ZIP · черновики, журнал, редакции и вложения") {
+            withIo("Проверка состава копии", { store.backupInfo() }) { info ->
+                val bytes = android.text.format.Formatter.formatShortFileSize(this, info.bytes)
+                val free = android.text.format.Formatter.formatShortFileSize(this, info.free)
+                fieldPrompt("Полная полевая копия", PromptAction("Выбрать место") {
+                    exportDocument(BACKUP, "application/zip", "field-journal-${shortDate()}.zip")
+                }, detail = "Объекты · ${info.sites}\nЗаписи · ${info.notes}\nЧерновики · ${info.drafts}\n" +
+                    "Вложения · ${info.files} ($bytes)\nСвободно на устройстве · $free")
+            }
+        }
+        row(exchange, "Экспорт копии по частям", "Полная копия в отдельной папке · части до 512 МиБ") {
+            withIo("Проверка состава копии", { store.backupInfo() }) { info ->
+                val size = android.text.format.Formatter.formatShortFileSize(this, info.bytes)
+                val free = android.text.format.Formatter.formatShortFileSize(this, info.free)
+                fieldPrompt("Копия по частям", PromptAction("Выбрать папку") {
+                    startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), BACKUP_PARTS_WRITE)
+                }, detail = "Вложения · $size · свободно · $free. Для временной сборки нужна свободная память на телефоне.")
+            }
+        }
+        row(exchange, "Восстановить копию из частей", "Выберите папку с индексом и всеми частями") {
+            startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), BACKUP_PARTS_READ)
+        }
+        row(exchange, "Сравнить импортированные правки", "Посмотреть поля и выбрать редакцию") { showImportConflicts() }
+        row(exchange, "Источники проекта", "Архивы, публикации, карты и интернет-ресурсы") { chooseSource() }
+        row(exchange, "Описание проекта", "Исполнители, методы, словарь полей и версия") {
+            val current = store.setting("project") ?: org.json.JSONObject()
+            editStructuredFields("Описание проекта", linkedMapOf("title" to "Название", "authors" to "Исполнители",
+                "methods" to "Методы", "schema" to "Словарь полей", "version" to "Версия данных"),
+                current.keys().asSequence().associateWith(current::getString)) {
+                store.saveSetting("project", org.json.JSONObject(it))
+            }
+        }
+        row(exchange, "Публичная выгрузка", "Упрощённые координаты и выбранные копии фотографий") { choosePublicExport() }
         row(exchange, "Экспорт объектов GeoJSON", "WGS 84 · точки, контуры и поля карточек") { exportDocument(GEOJSON, "application/geo+json", "field-journal-${shortDate()}.geojson") }
         row(exchange, "Экспорт выезда", "Маршрут GPX или комплект для QGIS с объектами и записями") { chooseTripExport() }
         list.addSpace(10)
         list.addView(label("Подтверждённые изменения хранятся в локальной базе. Файлы карт хранятся отдельно от резервных копий.", 13f, Palette.muted))
+    }
+
+    private fun showImportResult(result: ImportResult) {
+        render()
+        AlertDialog.Builder(this).setTitle("Импорт завершён").setMessage(listOf(
+            "Объекты · ${result.sites}", "Записи · ${result.notes}", "Выезды · ${result.trips}",
+            "Черновики · ${result.drafts}", "Существующие и пропущенные · ${result.skipped}",
+            "Редакции для проверки · ${result.conflicts}"
+        ).joinToString("\n")).setPositiveButton("Готово", null).show()
+    }
+
+    private fun previewGeoImport(plan: GeoImportPlan) {
+        fieldworkSheet("Проверка импорта GeoJSON") { dialog ->
+            val rows = ListView(this@MainActivity).apply {
+                adapter = android.widget.ArrayAdapter(this@MainActivity, android.R.layout.simple_list_item_1,
+                    plan.rows.map { "${it.name} · ${it.type} · ${it.status}" })
+            }
+            addView(label("Всего · ${plan.rows.size} · можно обработать · ${plan.rows.count(GeoImportRow::accepted)}",
+                14f, Palette.muted))
+            addView(rows, -1, dp(260))
+            addView(action("Импортировать", true) {
+                dialog.dismiss()
+                withIo("Импорт GeoJSON", { store.applyGeoImport(plan) }) { showImportResult(it) }
+            }.apply { isEnabled = plan.rows.any(GeoImportRow::accepted) }, -1, -2)
+        }
+    }
+
+    private fun showImportConflicts() {
+        fieldworkSheet("Редакции карточек") { dialog ->
+            val conflicts = store.conflicts()
+            if (conflicts.isEmpty()) addView(label("Различающихся редакций пока нет", 14f, Palette.muted))
+            for (conflict in conflicts) {
+                val incoming = recordFields(conflict.kind, conflict.incoming)
+                val local = recordFields(conflict.kind, conflict.original)
+                val fields = (local.keys + incoming.keys).filter { local[it] != incoming[it] }
+                val title = incoming["title"]?.trim('"') ?: conflict.recordId
+                val status = when (conflict.status) {
+                    "local" -> "Оставлена локальная"
+                    "incoming" -> "Принята импортированная"
+                    else -> "Ожидает выбора"
+                }
+                card(this, title, "$status · ${fields.size} полей") {
+                    dialog.dismiss()
+                    fieldworkSheet(title) { detail ->
+                        fun version(value: org.json.JSONObject) =
+                            if (conflict.kind == "sites") value.getJSONObject("properties") else value
+                        for ((name, value) in listOf("Локальная" to version(conflict.original),
+                            "Импортированная" to version(conflict.incoming))) {
+                            val time = value.optLong("updated").takeIf { it > 0 }?.let(::dateLabel).orEmpty()
+                            addView(label("$name · ${value.optString("author")} · $time", 14f, Palette.ink, true))
+                        }
+                        for (key in fields) {
+                            addSpace(7)
+                            addView(label(key, 14f, Palette.heading, true))
+                            addView(label("На телефоне · ${local[key].orEmpty().take(2000)}", 14f, Palette.ink))
+                            addView(label("Из импорта · ${incoming[key].orEmpty().take(2000)}", 14f, Palette.ink))
+                        }
+                        if (conflict.status == "pending") for ((name, take) in listOf(
+                            "Принять импортированную" to true, "Оставить локальную" to false
+                        )) {
+                            addSpace(6)
+                            addView(action(name, take) {
+                                runCatching { store.resolveConflict(conflict.id, take) }
+                                    .onSuccess { detail.dismiss(); showImportConflicts() }
+                                    .onFailure { message(it.message ?: "Не удалось выбрать редакцию") }
+                            }, -1, -2)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun choosePublicExport() {
+        val options = arrayOf("Без координат", "Округление до 0,1°", "Округление до 0,01°")
+        AlertDialog.Builder(this).setTitle("Точность публичной выгрузки").setItems(options) { _, index ->
+            publicationDecimals = index - 1
+            exportDocument(PUBLIC_ZIP, "application/zip", "field-journal-public-${shortDate()}.zip")
+        }.setPositiveButton("Отмена", null).show()
     }
 
     private fun shortDate() = java.time.LocalDate.now().toString()
@@ -1698,13 +2011,14 @@ class MainActivity : Activity() {
             editorIsNote -> "Сохранить новую запись?"
             else -> "Сохранить новый объект?"
         }
+        val saveContext = editor.saveContext()
         fieldPrompt(
             title = question,
-            detail = editor.adoptionNotice(),
+            detail = listOfNotNull(editor.adoptionNotice(), saveContext).joinToString("\n").ifBlank { null },
             primary = PromptAction("Сохранить") {
                 if (editor.saveConfirmed()) {
                     after()
-                    message("Сохранено")
+                    message(saveContext?.let { "Сохранено · $it" } ?: "Сохранено")
                 }
             },
             secondary = PromptAction("Не сохранять") {
@@ -1825,41 +2139,55 @@ class MainActivity : Activity() {
             }
             IMPORT -> {
                 if (resultCode != RESULT_OK || uri == null) return
-                withIo("Импорт данных", {
+                withIo("Чтение файла", {
                     requireNotNull(resolver.openInputStream(uri)).buffered().use { input ->
                         input.mark(4)
                         val zip = input.read() == 'P'.code && input.read() == 'K'.code
                         input.reset()
-                        if (zip) journal.importBackup(input) else journal.importGeoJson(input)
+                        if (zip) journal.importBackup(input) to null else null to journal.inspectGeoJson(input)
                     }
-                }) { result ->
-                    render()
-                    AlertDialog.Builder(this).setTitle("Импорт завершён")
-                        .setMessage(buildString {
-                            appendLine("Объектов добавлено: ${result.sites}")
-                            appendLine("Записей дневника: ${result.notes}")
-                            if (result.trips > 0) appendLine("Выездов: ${result.trips}")
-                            append("Совпадений пропущено: ${result.skipped}")
-                        })
-                        .setPositiveButton("Готово", null).show()
+                }) { (result, plan) ->
+                    result?.let(::showImportResult)
+                    plan?.let(::previewGeoImport)
                 }
+            }
+            CATALOG_CSV -> {
+                if (resultCode != RESULT_OK || uri == null) return
+                withIo("Импорт регионального CSV", {
+                    requireNotNull(resolver.openInputStream(uri)).use(journal::importCatalog)
+                }) { showImportResult(it) }
+            }
+            BACKUP_PARTS_WRITE, BACKUP_PARTS_READ -> {
+                if (resultCode != RESULT_OK || uri == null) return
+                val folder = BackupFolder(resolver, uri)
+                if (requestCode == BACKUP_PARTS_WRITE) withIo("Сохранение полевой копии по частям", {
+                    journal.exportBackupParts(folder::write)
+                }) { message("Копия по частям сохранена") }
+                else withIo("Проверка частей и восстановление", {
+                    folder.read().use { journal.importBackup(it, multipart = true) }
+                }) { showImportResult(it) }
             }
             TRIP_GPX, TRIP_KIT -> {
                 val id = pendingTripExport
                 pendingTripExport = null
+                val edition = pendingTripEdition
+                pendingTripEdition = null
                 if (resultCode != RESULT_OK || uri == null || id == null) return
                 withIo("Экспорт выезда", {
                     val openOutput = { requireNotNull(resolver.openOutputStream(uri, "wt")) }
                     if (requestCode == TRIP_GPX) journal.exportTripGpx(id, openOutput)
-                    else journal.exportTripKit(id, openOutput)
+                    else journal.exportTripKit(id, edition, openOutput)
                 }) { message("Выезд экспортирован") }
             }
-            BACKUP, GEOJSON -> {
+            BACKUP, GEOJSON, PUBLIC_ZIP -> {
                 if (resultCode != RESULT_OK || uri == null) return
                 withIo("Экспорт данных", {
                     val openOutput = { requireNotNull(resolver.openOutputStream(uri, "wt")) }
-                    if (requestCode == BACKUP) journal.exportBackup(openOutput)
-                    else journal.exportGeoJson(openOutput)
+                    when (requestCode) {
+                        BACKUP -> journal.exportBackup(full = true, openOutput = openOutput)
+                        PUBLIC_ZIP -> journal.exportPublic(publicationDecimals, openOutput)
+                        else -> journal.exportGeoJson(openOutput)
+                    }
                 }) { message("Файл сохранён") }
             }
         }
@@ -2039,6 +2367,10 @@ class MainActivity : Activity() {
         private const val TRIP_KIT = 20
         private const val TRIP_LOCATION = 21
         private const val TRIP_NOTIFICATIONS = 22
+        private const val CATALOG_CSV = 23
+        private const val PUBLIC_ZIP = 24
+        private const val BACKUP_PARTS_WRITE = 25
+        private const val BACKUP_PARTS_READ = 26
         private val io = Executors.newSingleThreadExecutor()
         private val diaryReads = Executors.newSingleThreadExecutor()
 

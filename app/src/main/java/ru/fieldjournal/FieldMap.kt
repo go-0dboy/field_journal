@@ -36,6 +36,7 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
             field = value
             invalidate()
         }
+    var onOverlappingSites: ((Coordinate, List<Site>) -> Unit)? = null
     var onTap: ((Coordinate, Site?) -> Unit)? = null
     var onMove: ((Coordinate, Double) -> Unit)? = null
     var onVertexTap: ((Int) -> Unit)? = null
@@ -113,7 +114,7 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
         invalidate()
     }
 
-    fun show(site: Site) = showPoints(site.vertices, site.anchor)
+    fun show(site: Site) { if (site.located) showPoints(site.vertices, site.anchor) }
 
     fun showPoints(points: List<Coordinate>, anchor: Coordinate = polygonCenter(points)) {
         if (points.size == 1 || width == 0 || height == 0) {
@@ -127,6 +128,11 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
     }
 
     fun zoomBy(delta: Double) = moveTo(center, zoom + delta)
+
+    fun coverageSamples(): List<Coordinate> = if (width <= 0 || height <= 0) listOf(center) else
+        (0..4).flatMap { row -> (0..4).map { col ->
+            coordinateAt((width - 1) * col / 4f, (height - 1) * row / 4f)
+        } }
 
     private fun coordinateAt(x: Float, y: Float) = Coordinate(degreeLatitude((rootY + y - height / 2.0) / world),
         wrapLongitude((rootX + x - width / 2.0) / world * 360 - 180))
@@ -178,13 +184,19 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
         override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
             if (editingGeometry) return false
             performClick()
-            val site = sites.asReversed().firstOrNull {
+            val candidates = sites.asReversed().filter(Site::located)
+            val markers = candidates.filter {
                 val anchor = pixel(it.anchor)
                 hypot(anchor.x - e.x, anchor.y - e.y) <= 26 * scale
-            } ?: sites.asReversed().firstOrNull {
-                it.area && inside(it.vertices, e.x, e.y) && it.holes.none { hole -> inside(hole, e.x, e.y) }
             }
-            onTap?.invoke(coordinateAt(e.x, e.y), site)
+            if (markers.size > 1 && onOverlappingSites != null) {
+                onOverlappingSites?.invoke(coordinateAt(e.x, e.y), markers)
+            } else {
+                val site = markers.firstOrNull() ?: candidates.firstOrNull {
+                    it.area && inside(it.vertices, e.x, e.y) && it.holes.none { hole -> inside(hole, e.x, e.y) }
+                }
+                onTap?.invoke(coordinateAt(e.x, e.y), site)
+            }
             return true
         }
     }
@@ -287,6 +299,7 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
         }
         for (site in sites) {
             val type = site.symbol
+            if (!site.located) continue
             val p = pixel(site.anchor)
             if (p.x in -28f..width + 28f && p.y in -28f..height + 28f) {
                 drawSymbol(canvas, p.x, p.y, 16 * scale, type)

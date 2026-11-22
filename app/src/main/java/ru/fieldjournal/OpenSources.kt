@@ -11,9 +11,11 @@ internal data class SourceArticle(
     val title: String,
     val pageId: Long,
     val excerpt: String,
-    val wikidataId: String?
+    val wikidataId: String?,
+    val revision: Long? = null
 ) {
-    val url get() = "https://ru.wikipedia.org/?curid=$pageId"
+    val url get() = revision?.let { "https://ru.wikipedia.org/w/index.php?oldid=$it" }
+        ?: "https://ru.wikipedia.org/?curid=$pageId"
     val wikidataUrl get() = wikidataId?.let { "https://www.wikidata.org/wiki/$it" }
 }
 
@@ -29,7 +31,7 @@ internal object OpenSources {
         if (query.isEmpty()) return emptyList()
         val url = "https://ru.wikipedia.org/w/api.php?action=query&generator=search" +
             "&gsrsearch=${Uri.encode(query)}&gsrnamespace=0&gsrlimit=6" +
-            "&prop=extracts%7Cpageprops&exchars=480&exintro=1&explaintext=1&exlimit=6" +
+            "&prop=extracts%7Cpageprops%7Cinfo&exchars=480&exintro=1&explaintext=1&exlimit=6" +
             "&ppprop=wikibase_item%7Cdisambiguation&formatversion=2&format=json"
         val result = fetch(url)
         if (result.has("error")) throw IOException("Ошибка поиска статьи")
@@ -43,7 +45,7 @@ internal object OpenSources {
             val properties = page.optJSONObject("pageprops")
             if (id <= 0 || title.isBlank() || properties?.has("disambiguation") == true) return@mapNotNull null
             val wikidata = properties?.value("wikibase_item")?.takeIf(qId::matches)
-            SourceArticle(title, id, page.value("extract").take(600), wikidata)
+            SourceArticle(title, id, page.value("extract").take(600), wikidata, page.optLong("lastrevid").takeIf { it > 0 })
         }
 
     internal fun facts(id: String?, fetch: (String) -> JSONObject = ::download): SourceFacts {

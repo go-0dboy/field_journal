@@ -84,6 +84,8 @@ internal class JournalEditor(
     private var type = site?.type
     private var linkedSite = note?.siteId
     private var linkedTrip = note?.tripId?.takeIf { activity.store.trips.get(it) != null }
+    private var visitTrip = draft.tripId
+    private var research = site?.research ?: note?.research ?: ResearchCard()
     private var parentId = site?.parentId
     private var customColor = site?.customColor
     private var lookingUpPlace = false
@@ -99,6 +101,21 @@ internal class JournalEditor(
         body.isFocusableInTouchMode = true
         site?.let(::buildSite)
         note?.let(::buildNote)
+        val activeTrip = if (site != null && isNew) activity.store.trips.active() else null
+        if (activeTrip != null) {
+            body.addSpace(8)
+            body.addView(CheckBox(activity).apply {
+                text = "Осмотрено в этом выезде · ${activeTrip.title}"
+                isChecked = visitTrip == activeTrip.id
+                minimumHeight = activity.dp(48)
+                setTextColor(Palette.ink)
+                setOnCheckedChangeListener { _, checked ->
+                    visitTrip = activeTrip.id.takeIf { checked }
+                    changed()
+                }
+            }, -1, -2)
+        }
+        addResearch()
         if (site != null && !isNew) addRelatedNotes()
         body.addSpace(15)
         if (!isNew) body.addView(activity.action(if (site != null) "Удалить объект" else "Удалить запись") {
@@ -158,7 +175,29 @@ internal class JournalEditor(
         parent.addView(input, -1, -2)
         parent.addSpace(9)
         inputs[key] = input
-        if (withLinks) input.enableWebLinkTaps(activity::openLink)
+        if (withLinks) {
+            input.enableWebLinkTaps(activity::openLink)
+            if (webAddresses(value).any { (range, _) -> range.last - range.first + 1 >= 55 }) {
+                parent.addView(activity.action("Адреса в тексте") {
+                    activity.fieldworkSheet("Ссылки в тексте") {
+                        for ((_, uri) in webAddresses(input.text).distinctBy { it.second }) {
+                            addView(activity.action(uri.host.orEmpty()) { activity.openLink(uri.toString()) }, -1, -2)
+                            addView(activity.action("Скопировать полный адрес") {
+                                val clipboard = activity.getSystemService(android.content.ClipboardManager::class.java)
+                                clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Адрес сайта", uri.toString()))
+                                activity.message("Адрес скопирован")
+                            }, -1, -2)
+                            addSpace(5)
+                        }
+                    }
+                }, -1, -2)
+                parent.addView(activity.action("Редактировать текст") {
+                    input.requestFocus()
+                    activity.getSystemService(android.view.inputmethod.InputMethodManager::class.java)
+                        .showSoftInput(input, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+                }, -1, -2)
+            }
+        }
         input.watch { changed() }
     }
 
@@ -185,7 +224,7 @@ internal class JournalEditor(
         info.addView(typeRow, -1, -2)
         info.addSpace(8)
         val details = buildList {
-            add(value.anchor.display() + "  WGS 84")
+            add(if (value.located) value.anchor.display() + "  WGS 84" else "Местоположение не установлено")
             value.coordinateOrigin?.let { add(it.title) }
             value.measuredAt?.let { add("Замер · ${dateLabel(it)}") }
             if (value.area) {
@@ -193,13 +232,15 @@ internal class JournalEditor(
                 add("${value.vertices.size} вершин · ${areaLabel(area.coerceAtLeast(0.0))}")
             }
             value.accuracy?.let { add("Точность ±${it.toInt()} м") }
-            value.altitude?.let { add("Высота ${it.toInt()} м (эллипсоид WGS 84)") }
+            value.altitude?.let {
+                add("Высота $it м · " + if (value.coordinateOrigin == CoordinateOrigin.DEVICE) "эллипсоид WGS 84" else "по источнику")
+            }
         }
         info.addView(activity.label(details.joinToString("\n"), 13f, Palette.heading).apply { setTextIsSelectable(true) })
         info.addSpace(8)
         val actions = activity.horizontal()
-        chip(actions, "На карте") { activity.showOnMap(value) }
-        chip(actions, "Изменить") {
+        if (value.located) chip(actions, "На карте") { activity.showOnMap(value) }
+        chip(actions, if (value.located) "Изменить" else "Установить на карте") {
             if (value.holes.isEmpty()) activity.editGeometry(value)
             else activity.confirm("Перерисовать границу?", "Внутренние контуры импортированного полигона будут заменены новой границей.") {
                 activity.editGeometry(value)
@@ -418,7 +459,14 @@ internal class JournalEditor(
                     activity.message("Выберите хотя бы одно поле")
                     return@action
                 }
-                for (key in updates) inputs[key]?.setText(suggestions.getValue(key).second)
+                for (key in updates - "description") inputs[key]?.setText(suggestions.getValue(key).second)
+                if ("description" in updates) {
+                    val articleEntry = ResearchEntry(kind = "excerpt", fields = mapOf(
+                        "title" to article.title, "quote" to article.excerpt, "url" to article.url,
+                        "accessed" to java.time.LocalDate.now().toString(), "license" to OpenSources.ARTICLE_LICENSE))
+                    research = research.copy(entries = research.entries + articleEntry)
+                    changed()
+                }
                 val sources = buildList {
                     add("Википедия · ${article.title} · ${article.url}")
                     if ("description" in updates) add("Фрагмент статьи · CC BY-SA 4.0 · ${OpenSources.ARTICLE_LICENSE}")
@@ -476,10 +524,8 @@ internal class JournalEditor(
         }, -1, -2)
         body.addSpace(6)
         if (draft.compact) {
-            val context = listOfNotNull(
-                value.siteId?.let(activity.store::site)?.title,
-                dateLabel(value.created)
-            ).joinToString(" · ")
+            val context = listOfNotNull(value.siteId?.let(activity.store::site)?.title,
+                value.tripId?.let(activity.store.trips::get)?.title, dateLabel(value.created)).joinToString(" · ")
             body.addView(activity.label(context, 14f, Palette.heading, true))
         } else {
             noteMetadata(value.created, body)
@@ -547,14 +593,28 @@ internal class JournalEditor(
         return "Объект · $name"
     }
 
+    fun saveContext(): String? = listOfNotNull(
+        linkedSite?.let(activity.store::site)?.title,
+        (linkedTrip ?: visitTrip)?.let(activity.store.trips::get)?.title
+    ).joinToString(" · ").ifBlank { null }
+
     private fun chooseSite(button: TextView) {
-        val sites = activity.store.sites()
-        val names = arrayOf("Без привязки") + sites.map(Site::title).toTypedArray()
-        AlertDialog.Builder(activity).setTitle("Объект дневника").setItems(names) { _, index ->
-            linkedSite = sites.getOrNull(index - 1)?.id
+        activity.chooseResearchSite("Объект дневника", allowNone = true) { id ->
+            linkedSite = id
             button.text = linkTitle()
             changed()
-        }.setPositiveButton("Отмена", null).show()
+        }
+    }
+
+    private fun addResearch() {
+        body.addSpace(14)
+        val title = if (site != null) "Научная карточка" else "Научные сведения"
+        body.addView(activity.action(title) {
+            activity.editResearch(title, research, site?.located, attachments, linkedTrip?.let(activity.store.trips::get)?.profile) { value ->
+                research = value
+                changed()
+            }
+        }, -1, -2)
     }
 
     private fun chip(row: LinearLayout, title: String, click: () -> Unit) {
@@ -682,6 +742,8 @@ internal class JournalEditor(
 
     private fun addRelatedNotes() {
         section("Полевой дневник")
+        body.addView(activity.action("Сравнить снимки осмотров") { activity.compareObservationPhotos(owner) }, -1, -2)
+        body.addSpace(6)
         for (entry in activity.store.noteSummaries(owner)) {
             body.addView(activity.action("${entry.title} · ${dateLabel(entry.created)}") { activity.openRelatedNote(entry.id) }, -1, -2)
             body.addSpace(4)
@@ -710,15 +772,15 @@ internal class JournalEditor(
                 period = text("period"), culture = text("culture"), condition = text("condition"),
                 inventory = text("inventory"), author = text("author"), confidence = text("confidence"),
                 context = text("context"), sources = text("sources"), attachments = attachments,
-                uncertainFields = uncertain.toSet(), parentId = parentId, customColor = customColor, links = links)
+                uncertainFields = uncertain.toSet(), parentId = parentId, customColor = customColor, links = links, research = research)
         },
         note = note?.let {
             it.copy(title = text("title"), body = text("body"), author = text("author"), weather = text("weather"),
                 siteId = linkedSite, tripId = linkedTrip, created = timestamp ?: it.created, attachments = attachments,
-                links = links)
+                links = links, research = research)
         },
         isNew = isNew, dirty = hasUnsavedChanges, removed = removedAttachments.toSet(), staged = stagedAttachments.toSet(),
-        compact = draft.compact, tripId = draft.tripId
+        compact = draft.compact, tripId = visitTrip
     )
 
     fun saveConfirmed(): Boolean = runCatching { activity.store.commitDraft(snapshot()) }.onSuccess {

@@ -16,6 +16,8 @@ internal fun writeTripGpx(contents: TripContents, out: OutputStream) {
     xml.setOutput(writer)
     xml.startDocument("UTF-8", true)
     xml.setPrefix("", namespace)
+    val accuracyNamespace = "https://github.com/go-0dboy/field_journal/gpx/1"
+    xml.setPrefix("fj", accuracyNamespace)
     xml.startTag(namespace, "gpx").attribute(null, "version", "1.1").attribute(null, "creator", "Field Journal")
     xml.startTag(namespace, "trk")
     xml.startTag(namespace, "name").text(contents.trip.title).endTag(namespace, "name")
@@ -27,6 +29,9 @@ internal fun writeTripGpx(contents: TripContents, out: OutputStream) {
                 .attribute(null, "lon", decimal(point.point.longitude))
             point.altitude?.let { xml.startTag(namespace, "ele").text(decimal(it)).endTag(namespace, "ele") }
             xml.startTag(namespace, "time").text(Instant.ofEpochMilli(point.time).toString()).endTag(namespace, "time")
+            xml.startTag(namespace, "extensions")
+            xml.startTag(accuracyNamespace, "accuracy_m").text(decimal(point.accuracy)).endTag(accuracyNamespace, "accuracy_m")
+            xml.endTag(namespace, "extensions")
             xml.endTag(namespace, "trkpt")
         }
         xml.endTag(namespace, "trkseg")
@@ -45,16 +50,22 @@ private data class PhotoLink(val siteId: String?, val noteId: String?, val attac
     }
 }
 
-internal fun writeTripKit(contents: TripContents, out: OutputStream, fileFor: (String) -> File) {
+internal fun writeTripKit(
+    contents: TripContents, out: OutputStream, fileFor: (String) -> File,
+    edition: TripEdition? = null, project: JSONObject = JSONObject()
+) {
     val links = contents.sites.flatMap { site -> site.attachments.map { PhotoLink(site.id, null, it) } } +
         contents.notes.flatMap { note -> note.attachments.map { PhotoLink(note.siteId, note.id, it) } }
-    val attachments = links.distinctBy { it.attachment.id }.associateWith { link ->
+    val visitLinks = contents.visits.flatMap { visit -> visit.sites.flatMap { site ->
+        site.attachments.map { PhotoLink(site.id, null, it) }
+    } }
+    val attachments = (links + visitLinks).distinctBy { it.attachment.id }.associateWith { link ->
         fileFor(link.attachment.id).also { require(it.isFile) { "Вложение недоступно: ${link.attachment.name}" } }
     }
     val paths = attachments.keys.associate { it.attachment.id to it.path }
     ZipOutputStream(out).use { zip ->
         fun entry(name: String, write: () -> Unit) {
-            zip.putNextEntry(ZipEntry(name))
+            zip.putNextEntry(ZipEntry(name).apply { time = edition?.time ?: contents.trip.startedAt })
             write()
             zip.closeEntry()
         }
@@ -71,10 +82,10 @@ internal fun writeTripKit(contents: TripContents, out: OutputStream, fileFor: (S
         text("objects.geojson", JSONObject().put("type", "FeatureCollection").put("features", JSONArray(features)).toString())
         if (contents.points.isNotEmpty()) entry("track.gpx") { writeTripGpx(contents, zip) }
         text("observations.csv", buildString {
-            appendLine("note_id,site_id,trip_id,title,observed_at,author,weather,description,links")
+            appendLine("note_id,site_id,trip_id,title,observed_at,author,weather,description,links,research")
             for (note in contents.notes) {
                 appendLine(csv(note.id, note.siteId, contents.trip.id, note.title, Instant.ofEpochMilli(note.created).toString(),
-                    note.author, note.weather, note.body, note.links.takeIf { it.isNotEmpty() }?.linksJson()?.toString()))
+                    note.author, note.weather, note.body, note.links.takeIf { it.isNotEmpty() }?.linksJson()?.toString(), note.research.json().toString()))
             }
         })
         text("attachments.csv", buildString {
@@ -84,7 +95,25 @@ internal fun writeTripKit(contents: TripContents, out: OutputStream, fileFor: (S
                     link.attachment.mime, paths[link.attachment.id]))
             }
         })
-        text("trip.json", contents.trip.json().toString(2))
+        text("visits.csv", buildString {
+            appendLine("visit_id,site_id,trip_id,visited_at")
+            for (visit in contents.visits) appendLine(csv(visit.id, visit.siteId, contents.trip.id,
+                Instant.ofEpochMilli(visit.time).toString()))
+        })
+        text("visit_snapshots.json", JSONArray(contents.visits.map { visit ->
+            visit.json().apply {
+                put("media", JSONArray(visit.sites.flatMap(Site::attachments).mapNotNull { paths[it.id] }.distinct()))
+            }
+        }).toString())
+        text("track_quality.csv", buildString {
+            appendLine("segment,measured_at,longitude,latitude,altitude_m,accuracy_m")
+            for (point in contents.points) appendLine(csv(point.segment.toString(), Instant.ofEpochMilli(point.time).toString(),
+                decimal(point.point.longitude), decimal(point.point.latitude), point.altitude?.let(::decimal), decimal(point.accuracy)))
+        })
+        text("trip.json", contents.trip.json().apply {
+            edition?.let { put("edition", it.number).put("issued_at", Instant.ofEpochMilli(it.time).toString()) }
+            if (project.length() > 0) put("project", project)
+        }.toString(2))
         text("README.txt", """
             Полевой дневник. Комплект для QGIS
 
@@ -93,6 +122,9 @@ internal fun writeTripKit(contents: TripContents, out: OutputStream, fileFor: (S
             Добавьте objects.geojson как векторный слой объектов (WGS 84).
             Если есть track.gpx, добавьте GPX и выберите слой tracks.
             Добавьте observations.csv и attachments.csv как таблицы UTF-8.
+            Таблица visits.csv содержит отдельные осмотры. Геометрии на даты осмотров
+            находятся в visit_snapshots.json. В track_quality.csv сохранены оценки
+            точности Android в метрах. trip.json хранит редакцию и сведения проекта.
             Связь объекта и наблюдения задаётся по site_id. Файлы привязаны
             по site_id и note_id. Колонка path содержит путь к файлу от корня комплекта.
             Поле links содержит адреса и названия интернет-ресурсов в формате JSON.

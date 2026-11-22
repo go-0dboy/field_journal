@@ -9,18 +9,18 @@ import java.util.Locale
 import java.util.UUID
 import kotlin.math.*
 
-internal data class Coordinate(val latitude: Double, val longitude: Double) {
+internal data class Coordinate(val latitude: Double, val longitude: Double, val elevation: Double? = null) {
     init {
         require(latitude.isFinite() && latitude in -90.0..90.0 && longitude.isFinite() && longitude in -180.0..180.0) {
             "Координаты должны быть в пределах WGS 84"
         }
     }
 
-    fun json() = JSONArray().put(longitude).put(latitude)
+    fun json() = JSONArray().put(longitude).put(latitude).apply { elevation?.let { put(it) } }
     fun display() = String.format(Locale.US, "%.6f, %.6f", latitude, longitude)
 
     companion object {
-        fun read(json: JSONArray) = Coordinate(json.getDouble(1), json.getDouble(0))
+        fun read(json: JSONArray) = Coordinate(json.getDouble(1), json.getDouble(0), json.optDouble(2).takeIf(Double::isFinite))
     }
 }
 
@@ -98,16 +98,21 @@ internal data class Site(
     val uncertainFields: Set<String> = emptySet(),
     val parentId: String? = null,
     val customColor: Int? = null,
-    val links: List<WebLink> = emptyList()
+    val links: List<WebLink> = emptyList(),
+    val extraProperties: Map<String, Any> = emptyMap(),
+    val research: ResearchCard = ResearchCard()
 ) {
-    init { require(vertices.size == 1 || vertices.size >= 3) }
+    init { require(vertices.size != 2 && (vertices.isNotEmpty() || holes.isEmpty())) }
+    val located get() = vertices.isNotEmpty()
     val symbol get() = objectType(type).let { customColor?.let { color -> it.copy(color = color) } ?: it }
     val area get() = vertices.size > 1
     val anchor get() = if (!area) vertices.first() else polygonCenter(vertices)
 
     fun feature(normalizeWinding: Boolean = false): JSONObject {
         val geometry = JSONObject()
-        if (!area) {
+        if (!located) {
+            // GeoJSON permits an explicit null geometry for an unlocated feature.
+        } else if (!area) {
             geometry.put("type", "Point").put("coordinates", anchor.json())
         } else {
             val rings = listOf(vertices) + holes
@@ -116,7 +121,7 @@ internal data class Site(
                 JSONArray((coordinates + coordinates.first()).map(Coordinate::json))
             }))
         }
-        val properties = JSONObject()
+        val properties = JSONObject(extraProperties)
             .put("title", title).put("type", type).put("description", description)
             .put("period", period).put("culture", culture).put("condition", condition)
             .put("inventory", inventory).put("author", author).put("confidence", confidence)
@@ -130,7 +135,9 @@ internal data class Site(
         measuredAt?.let { properties.put("measured_at", it) }
         if (uncertainFields.isNotEmpty()) properties.put("uncertain_fields", JSONArray(uncertainFields.sorted()))
         if (links.isNotEmpty()) properties.put("links", links.linksJson())
-        return JSONObject().put("type", "Feature").put("id", id).put("geometry", geometry).put("properties", properties)
+        if (research != ResearchCard()) properties.put("research", research.json())
+        return JSONObject().put("type", "Feature").put("id", id)
+            .put("geometry", if (located) geometry else JSONObject.NULL).put("properties", properties)
     }
 
     companion object {
@@ -141,11 +148,13 @@ internal data class Site(
             require(feature.getString("type") == "Feature") { "Ожидается объект GeoJSON Feature" }
             val p = feature.optJSONObject("properties") ?: JSONObject()
             val title = p.optString("title").ifBlank { p.optString("name", "Объект без названия") }
-            val geometry = feature.getJSONObject("geometry")
-            val coords = geometry.getJSONArray("coordinates")
-            val rings = when (geometry.getString("type")) {
-                "Point" -> listOf(listOf(Coordinate.read(coords)))
-                "Polygon" -> coords.arrays().mapIndexed { index, ring ->
+            require(feature.has("geometry")) { "Отсутствует поле geometry" }
+            val geometry = feature.optJSONObject("geometry")
+            require(geometry != null || feature.isNull("geometry")) { "Некорректная геометрия" }
+            val rings = when (geometry?.getString("type")) {
+                null -> emptyList()
+                "Point" -> listOf(listOf(Coordinate.read(geometry.getJSONArray("coordinates"))))
+                "Polygon" -> geometry.getJSONArray("coordinates").arrays().mapIndexed { index, ring ->
                     val points = ring.arrays().map(Coordinate::read)
                     require(points.size >= 4 && points.first() == points.last()) { "«$title», контур ${index + 1} должен быть замкнут" }
                     points.dropLast(1).also {
@@ -156,18 +165,18 @@ internal data class Site(
                 }.also { require(it.isNotEmpty()) { "У полигона отсутствует контур" } }
                 else -> error("Поддерживаются геометрии Point и Polygon")
             }
-            if (validateTopology) holeError(rings)?.let { error -> throw IllegalArgumentException("«$title». $error") }
+            if (validateTopology && rings.isNotEmpty()) holeError(rings)?.let { error -> throw IllegalArgumentException("«$title». $error") }
             val attachments = if (withAttachments) p.array("attachments").objects().map(Attachment::read) else emptyList()
             val created = p.optLong("created", System.currentTimeMillis())
             val id = feature.optString("id").takeIf { !feature.isNull("id") && it.isNotBlank() }
                 ?: if (withAttachments) newId() else UUID.nameUUIDFromBytes(feature.toString().toByteArray(Charsets.UTF_8)).toString()
             return Site(
                 id, title,
-                p.optString("type", "other"), rings.first(), rings.drop(1), p.optString("description"),
+                p.optString("type", "other"), rings.firstOrNull().orEmpty(), rings.drop(1), p.optString("description"),
                 p.optString("period"), p.optString("culture"), p.optString("condition"),
                 p.optString("inventory"), p.optString("author"), p.optString("confidence"),
                 p.optString("context"), p.optString("sources"), p.nullableDouble("accuracy_m"),
-                p.nullableDouble("altitude_m"), attachments, created, p.optLong("updated", created),
+                p.nullableDouble("altitude_m") ?: rings.firstOrNull()?.singleOrNull()?.elevation, attachments, created, p.optLong("updated", created),
                 coordinateOrigin = CoordinateOrigin.read(p.optString("coordinate_origin")),
                 measuredAt = p.optLong("measured_at").takeIf { it > 0 },
                 parentId = p.optString("parent_id").takeIf { !p.isNull("parent_id") && it.isNotBlank() && it != id },
@@ -176,11 +185,18 @@ internal data class Site(
                 uncertainFields = p.array("uncertain_fields").let { fields ->
                     (0 until fields.length()).map(fields::optString).filterTo(linkedSetOf()) { it in verifiableSiteFields }
                 },
-                links = p.webLinks()
+                links = p.webLinks(),
+                extraProperties = p.keys().asSequence().filterNot(knownSiteProperties::contains)
+                    .associateWith(p::get),
+                research = ResearchCard.read(p.optJSONObject("research"))
             )
         }
     }
 }
+
+private val knownSiteProperties = ("title type description period culture condition inventory author confidence " +
+    "context sources accuracy_m altitude_m attachments created updated parent_id color coordinate_origin " +
+    "measured_at uncertain_fields links research").split(' ').toSet()
 
 internal data class Note(
     val id: String = newId(),
@@ -193,7 +209,8 @@ internal data class Note(
     val created: Long = System.currentTimeMillis(),
     val updated: Long = created,
     val tripId: String? = null,
-    val links: List<WebLink> = emptyList()
+    val links: List<WebLink> = emptyList(),
+    val research: ResearchCard = ResearchCard()
 ) {
     fun json() = JSONObject().put("id", id).put("title", title).put("body", body)
         .put("author", author).put("weather", weather).put("site_id", siteId ?: JSONObject.NULL)
@@ -202,6 +219,7 @@ internal data class Note(
         .apply {
             tripId?.let { put("trip_id", it) }
             if (links.isNotEmpty()) put("links", links.linksJson())
+            if (research != ResearchCard()) put("research", research.json())
         }
 
     companion object {
@@ -212,7 +230,7 @@ internal data class Note(
             value.array("attachments").objects().map(Attachment::read), value.getLong("created"),
             value.optLong("updated", value.getLong("created")),
             value.optString("trip_id").takeIf(attachmentId::matches),
-            value.webLinks()
+            value.webLinks(), ResearchCard.read(value.optJSONObject("research"))
         )
     }
 }

@@ -285,6 +285,7 @@ internal enum class FieldIcon(val description: String, val addsItem: Boolean = f
     CAMERA("Снять фото", true),
     IMAGE("Добавить фото", true),
     DOCUMENT("Добавить документ", true),
+    LINK("Ссылка"),
     NOTE("Запись"),
     TRIP("Выезд"),
     DRAFT("Черновики"),
@@ -402,6 +403,18 @@ private class FieldIconDrawable(
                 lineTo(16f, 12f)
                 moveTo(8f, 16f)
                 lineTo(13f, 16f)
+            }
+            FieldIcon.LINK -> path {
+                moveTo(11f, 8f)
+                lineTo(15f, 4f)
+                cubicTo(19f, 0f, 24f, 5f, 20f, 9f)
+                lineTo(16f, 13f)
+                moveTo(8f, 11f)
+                lineTo(4f, 15f)
+                cubicTo(0f, 19f, 5f, 24f, 9f, 20f)
+                lineTo(13f, 16f)
+                moveTo(8f, 16f)
+                lineTo(16f, 8f)
             }
             FieldIcon.DATA -> {
                 canvas.drawRoundRect(3f, 5f, 21f, 20f, 2f, 2f, pen)

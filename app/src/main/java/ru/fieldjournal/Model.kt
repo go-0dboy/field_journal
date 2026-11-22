@@ -97,7 +97,8 @@ internal data class Site(
     val measuredAt: Long? = null,
     val uncertainFields: Set<String> = emptySet(),
     val parentId: String? = null,
-    val customColor: Int? = null
+    val customColor: Int? = null,
+    val links: List<WebLink> = emptyList()
 ) {
     init { require(vertices.size == 1 || vertices.size >= 3) }
     val symbol get() = objectType(type).let { customColor?.let { color -> it.copy(color = color) } ?: it }
@@ -128,6 +129,7 @@ internal data class Site(
         coordinateOrigin?.let { properties.put("coordinate_origin", it.id) }
         measuredAt?.let { properties.put("measured_at", it) }
         if (uncertainFields.isNotEmpty()) properties.put("uncertain_fields", JSONArray(uncertainFields.sorted()))
+        if (links.isNotEmpty()) properties.put("links", links.linksJson())
         return JSONObject().put("type", "Feature").put("id", id).put("geometry", geometry).put("properties", properties)
     }
 
@@ -173,7 +175,8 @@ internal data class Site(
                     ?.substring(1)?.toInt(16)?.or(0xff000000.toInt()),
                 uncertainFields = p.array("uncertain_fields").let { fields ->
                     (0 until fields.length()).map(fields::optString).filterTo(linkedSetOf()) { it in verifiableSiteFields }
-                }
+                },
+                links = p.webLinks()
             )
         }
     }
@@ -189,13 +192,17 @@ internal data class Note(
     val attachments: List<Attachment> = emptyList(),
     val created: Long = System.currentTimeMillis(),
     val updated: Long = created,
-    val tripId: String? = null
+    val tripId: String? = null,
+    val links: List<WebLink> = emptyList()
 ) {
     fun json() = JSONObject().put("id", id).put("title", title).put("body", body)
         .put("author", author).put("weather", weather).put("site_id", siteId ?: JSONObject.NULL)
         .put("attachments", JSONArray(attachments.map(Attachment::json)))
         .put("created", created).put("updated", updated)
-        .apply { tripId?.let { put("trip_id", it) } }
+        .apply {
+            tripId?.let { put("trip_id", it) }
+            if (links.isNotEmpty()) put("links", links.linksJson())
+        }
 
     companion object {
         fun read(value: JSONObject): Note = Note(
@@ -204,7 +211,8 @@ internal data class Note(
             if (value.isNull("site_id")) null else value.optString("site_id"),
             value.array("attachments").objects().map(Attachment::read), value.getLong("created"),
             value.optLong("updated", value.getLong("created")),
-            value.optString("trip_id").takeIf(attachmentId::matches)
+            value.optString("trip_id").takeIf(attachmentId::matches),
+            value.webLinks()
         )
     }
 }

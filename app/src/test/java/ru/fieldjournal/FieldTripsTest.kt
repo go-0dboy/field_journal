@@ -32,7 +32,8 @@ class FieldTripsTest {
             assertThrows(IllegalStateException::class.java) { store.trips.start("Второй выезд", start) }
 
             val site = Site(title = "Стоянка", vertices = listOf(Coordinate(59.0, 33.0)),
-                coordinateOrigin = CoordinateOrigin.DEVICE, measuredAt = start, uncertainFields = setOf("period"))
+                coordinateOrigin = CoordinateOrigin.DEVICE, measuredAt = start, uncertainFields = setOf("period"),
+                links = listOf(WebLink("https://example.org/registry/42", "Реестр")))
             val draft = EditorDraft(site = site, isNew = true, tripId = trip.id)
             store.saveDraft(draft)
             store.commitDraft(draft)
@@ -41,7 +42,8 @@ class FieldTripsTest {
             val visitedAt = requireNotNull(store.trips.latestVisit(site.id))
             val photo = store.addAttachment("фотография".byteInputStream(), "Общий вид.jpg", "image/jpeg")
             val note = Note(title = "Обход", body = "Вид на \"север\"\nГраница уточнена",
-                siteId = site.id, tripId = trip.id, created = start, attachments = listOf(photo))
+                siteId = site.id, tripId = trip.id, created = start, attachments = listOf(photo),
+                links = listOf(WebLink("https://example.org/archive", "Архив")))
             store.save(note)
 
             val first = TrackPoint(site.anchor, start, 4.0, 94.0, 0)
@@ -72,8 +74,11 @@ class FieldTripsTest {
             assertEquals(java.time.Instant.ofEpochMilli(visitedAt).toString(),
                 feature.getJSONObject("properties").getString("visited_at"))
             assertEquals(setOf("period"), Site.read(feature, withAttachments = false).uncertainFields)
+            assertEquals(site.links, Site.read(feature, withAttachments = false).links)
             assertTrue(files.getValue("observations.csv").decodeToString().contains("\"${note.id}\",\"${site.id}\""))
             assertTrue(files.getValue("observations.csv").decodeToString().contains("Вид на \"\"север\"\"\nГраница"))
+            val encodedLinks = note.links.linksJson().toString().replace("\"", "\"\"")
+            assertTrue(files.getValue("observations.csv").decodeToString().contains(",\"$encodedLinks\""))
             assertTrue(files.getValue("attachments.csv").decodeToString().contains(photoPath))
             assertEquals("фотография", files.getValue(photoPath).decodeToString())
             val gpx = DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }.newDocumentBuilder()

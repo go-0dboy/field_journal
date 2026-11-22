@@ -1002,8 +1002,7 @@ class MainActivity : Activity() {
     }
 
     internal fun openLink(value: String) {
-        val uri = Uri.parse(value)
-        if (uri.scheme !in listOf("http", "https") || uri.host.isNullOrBlank()) return message("Нужна ссылка HTTP или HTTPS")
+        val uri = webUri(value) ?: return message("Нужна ссылка HTTP или HTTPS")
         runCatching { startActivity(Intent(Intent.ACTION_VIEW, uri)) }.onFailure { message("На телефоне нет приложения для открытия ссылки") }
     }
 

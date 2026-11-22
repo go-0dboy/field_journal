@@ -1,6 +1,10 @@
 package ru.fieldjournal
 
 import android.os.Looper
+import android.os.SystemClock
+import android.text.style.URLSpan
+import android.view.InputDevice
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.EditText
@@ -12,12 +16,101 @@ import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 import org.robolectric.shadows.ShadowAlertDialog
 import java.time.Duration
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], qualifiers = "w320dp-h640dp-mdpi")
 class EditorNavigationTest {
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Test fun existingDescriptionLinksOpenOnTapAndRemainEditable() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        try {
+            val activity = controller.get()
+            val address = "https://ru.wikipedia.org/wiki/Статья_(археология)"
+            val description = "По данным (\n$address)."
+            val site = Site(title = "Стоянка", vertices = listOf(Coordinate(59.0, 33.0)),
+                description = description, sources = "Архив https://example.org/fund/42.")
+            activity.store.save(site)
+            activity.openSite(site.id)
+            val root = activity.window.decorView
+            val input = root.input("Описание местности и объекта")
+            layout(root)
+            assertEquals(address, input.text.getSpans(0, input.length(), URLSpan::class.java).single().url)
+            tapText(input, description.indexOf("https") + 4)
+            val opened = requireNotNull(shadowOf(activity).nextStartedActivity) { "Tapping the URL must open the browser" }
+            assertEquals(android.content.Intent.ACTION_VIEW, opened.action)
+            assertEquals(address, opened.dataString)
+            tapText(input, 2)
+            assertTrue(input.hasFocus())
+            assertNull(shadowOf(activity).nextStartedActivity)
+            input.setText("Новая ссылка https://example.org/field?item=2#photo.")
+            assertEquals("https://example.org/field?item=2#photo",
+                input.text.getSpans(0, input.length(), URLSpan::class.java).single().url)
+            val sources = root.input("Литература, архивные шифры и ссылки")
+            assertEquals("https://example.org/fund/42",
+                sources.text.getSpans(0, sources.length(), URLSpan::class.java).single().url)
+        } finally {
+            controller.pause().stop().destroy()
+        }
+    }
+
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Test fun linksInSiteAndCompactNoteFollowDraftAndSaveConfirmation() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        try {
+            val activity = controller.get()
+            val site = Site(title = "Раскоп", vertices = listOf(Coordinate(59.0, 33.0)))
+            activity.store.save(site)
+            activity.openSite(site.id)
+            val root = activity.window.decorView
+            val siteLink = WebLink("https://example.org/archive?id=8", "Карточка архива")
+            root.text("Добавить ссылку").performClick()
+            var sheet = ShadowAlertDialog.getLatestAlertDialog().window!!.decorView
+            sheet.input("Адрес сайта").setText("file:///private")
+            sheet.text("Добавить").performClick()
+            assertNotNull(sheet.input("Адрес сайта").error)
+            sheet.input("Адрес сайта").setText(siteLink.url)
+            sheet.input("Название ресурса (необязательно)").setText(siteLink.title)
+            sheet.text("Добавить").performClick()
+            assertEquals(emptyList<WebLink>(), activity.store.site(site.id)?.links)
+            controller.recreate()
+            val restored = controller.get()
+            val restoredRoot = restored.window.decorView
+            restoredRoot.action("Открыть ссылку ${siteLink.title}").performClick()
+            assertEquals(siteLink.url, shadowOf(restored).nextStartedActivity.dataString)
+            restoredRoot.action("Сохранить и закрыть").performClick()
+            chooseConfirmation("Сохранить")
+            assertEquals(listOf(siteLink), restored.store.site(site.id)?.links)
+
+            restored.createNote(site.id, compact = true)
+            val noteBody = "Схема https://example.org/map"
+            restoredRoot.input("Короткая заметка").setText(noteBody)
+            layout(restoredRoot)
+            tapText(restoredRoot.input("Короткая заметка"), noteBody.indexOf("https") + 4)
+            assertEquals("https://example.org/map", shadowOf(restored).nextStartedActivity.dataString)
+            restoredRoot.text("Добавить ссылку").performClick()
+            sheet = ShadowAlertDialog.getLatestAlertDialog().window!!.decorView
+            val noteLink = WebLink("https://www.example.org/article")
+            sheet.input("Адрес сайта").setText("www.example.org/article")
+            sheet.text("Добавить").performClick()
+            restoredRoot.action("Убрать ссылку ${noteLink.url}").performClick()
+            assertFalse(restoredRoot.descendants().any { it.contentDescription == "Открыть ссылку ${noteLink.url}" })
+            restoredRoot.text("Добавить ссылку").performClick()
+            sheet = ShadowAlertDialog.getLatestAlertDialog().window!!.decorView
+            sheet.input("Адрес сайта").setText(noteLink.url)
+            sheet.text("Добавить").performClick()
+            restoredRoot.action("Сохранить и закрыть").performClick()
+            chooseConfirmation("Сохранить")
+            val saved = restored.store.notes().single { it.siteId == site.id }
+            assertEquals(noteBody, saved.body)
+            assertEquals(listOf(noteLink), saved.links)
+        } finally {
+            controller.pause().stop().destroy()
+        }
+    }
+
     @Test fun linkedNoteReturnsToOriginAfterRecreationAndNewNoteDoesTheSame() {
         val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
         try {
@@ -392,6 +485,19 @@ class EditorNavigationTest {
         view.measure(View.MeasureSpec.makeMeasureSpec(320, View.MeasureSpec.EXACTLY),
             View.MeasureSpec.makeMeasureSpec(640, View.MeasureSpec.EXACTLY))
         view.layout(0, 0, 320, 640)
+    }
+
+    private fun tapText(input: EditText, offset: Int) {
+        val lines = requireNotNull(input.layout)
+        val line = lines.getLineForOffset(offset)
+        val x = lines.getPrimaryHorizontal(offset) + input.totalPaddingLeft - input.scrollX
+        val y = (lines.getLineTop(line) + lines.getLineBottom(line)) / 2f + input.totalPaddingTop - input.scrollY
+        val now = SystemClock.uptimeMillis()
+        for (action in listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP)) {
+            val event = MotionEvent.obtain(now, now, action, x, y, 0).apply { source = InputDevice.SOURCE_TOUCHSCREEN }
+            input.dispatchTouchEvent(event)
+            event.recycle()
+        }
     }
 
     private fun top(view: View) = IntArray(2).also(view::getLocationOnScreen)[1]

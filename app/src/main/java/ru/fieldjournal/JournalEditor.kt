@@ -4,6 +4,7 @@ import android.app.AlertDialog
 import android.app.DatePickerDialog
 import android.content.DialogInterface
 import android.text.Editable
+import android.text.InputType
 import android.text.TextWatcher
 import android.view.View
 import android.widget.CheckBox
@@ -75,6 +76,7 @@ internal class JournalEditor(
     private val site = draft.site
     private val note = draft.note
     private lateinit var mediaList: LinearLayout
+    private lateinit var linkList: LinearLayout
     private val owner get() = draft.id
     val isNew get() = draft.isNew
     var hasUnsavedChanges = draft.dirty
@@ -87,6 +89,7 @@ internal class JournalEditor(
     private var lookingUpPlace = false
     private var timestamp = note?.created
     private var attachments = site?.attachments ?: note?.attachments.orEmpty()
+    private var links = site?.links ?: note?.links.orEmpty()
     private val removedAttachments = draft.removed.toMutableSet()
     private val stagedAttachments = draft.staged.toMutableSet()
     private val uncertain = site?.uncertainFields.orEmpty().toMutableSet()
@@ -127,7 +130,10 @@ internal class JournalEditor(
         if (position > 0) scroll.post { scroll.scrollTo(0, position) }
     }
 
-    private fun field(key: String, label: String, value: String, lines: Int = 1, parent: LinearLayout = body) {
+    private fun field(
+        key: String, label: String, value: String, lines: Int = 1, parent: LinearLayout = body,
+        withLinks: Boolean = false
+    ) {
         val titled = activity.label(label, 13f, Palette.muted, true)
         val input = activity.edit(label, value, lines)
         input.id = View.generateViewId()
@@ -152,6 +158,7 @@ internal class JournalEditor(
         parent.addView(input, -1, -2)
         parent.addSpace(9)
         inputs[key] = input
+        if (withLinks) input.enableWebLinkTaps(activity::openLink)
         input.watch { changed() }
     }
 
@@ -221,8 +228,9 @@ internal class JournalEditor(
         body.addView(info, -1, -2)
         section("Описание")
         field("title", "Название", value.title)
-        field("description", "Описание местности и объекта", value.description, 3)
+        field("description", "Описание местности и объекта", value.description, 3, withLinks = true)
         body.addView(activity.action("Заполнить по открытым источникам") { findPlace() }, -1, -2)
+        addLinks()
         addGroup(value)
         addMedia()
         section("Датировка и состояние")
@@ -234,19 +242,7 @@ internal class JournalEditor(
         field("author", "Автор наблюдения / экспедиция", value.author)
         field("confidence", "Достоверность и происхождение координат", value.confidence)
         field("context", "Контекст, слой, глубина, находки", value.context, 2)
-        field("sources", "Литература, архивные шифры и ссылки", value.sources, 3)
-        body.addView(activity.action("Открыть ссылку из источников") {
-            val links = Regex("https?://[^\\s<>]+", RegexOption.IGNORE_CASE)
-                .findAll(text("sources")).map { it.value.trimEnd('.', ',', ')', ']', ';') }.distinct().toList()
-            when (links.size) {
-                0 -> activity.message("Добавьте ссылку HTTPS в поле источников")
-                1 -> activity.openLink(links.first())
-                else -> AlertDialog.Builder(activity).setTitle("Ссылки").setItems(links.toTypedArray()) { _, i ->
-                    activity.openLink(links[i])
-                }.setPositiveButton("Отмена", null).show()
-            }
-        }, -1, -2)
-        body.addSpace(6)
+        field("sources", "Литература, архивные шифры и ссылки", value.sources, 3, withLinks = true)
     }
 
     private fun addGroup(value: Site) {
@@ -487,7 +483,8 @@ internal class JournalEditor(
             ).joinToString(" · ")
             body.addView(activity.label(context, 14f, Palette.heading, true))
             body.addSpace(8)
-            field("body", "Короткая заметка", value.body, 3)
+            field("body", "Короткая заметка", value.body, 3, withLinks = true)
+            addLinks()
             addMedia()
             body.addSpace(12)
             val details = activity.vertical().apply { visibility = View.GONE }
@@ -501,7 +498,8 @@ internal class JournalEditor(
             body.addView(details, -1, -2)
         } else {
             noteDetails(value, body)
-            field("body", "Маршрут, работы и наблюдения", value.body, 7)
+            field("body", "Маршрут, работы и наблюдения", value.body, 7, withLinks = true)
+            addLinks()
             field("author", "Автор / группа", value.author)
             field("weather", "Погода и условия работ", value.weather)
             addMedia()
@@ -574,6 +572,64 @@ internal class JournalEditor(
                 })
             }
         }, -1, -2)
+    }
+
+    private fun addLinks() {
+        section("Ссылки")
+        linkList = activity.vertical()
+        body.addView(linkList, -1, -2)
+        body.addView(activity.addAction("Добавить ссылку", FieldIcon.LINK, primary = false) { promptLink() }, -1, -2)
+        showLinks()
+    }
+
+    private fun showLinks() {
+        linkList.removeAllViews()
+        for (link in links) {
+            linkList.addView(activity.horizontal().apply {
+                val caption = link.title.ifBlank { link.url }
+                addView(activity.action(caption, description = "Открыть ссылку $caption") {
+                    activity.openLink(link.url)
+                }.apply {
+                    gravity = android.view.Gravity.START or android.view.Gravity.CENTER_VERTICAL
+                    setTextColor(Palette.accent)
+                    setMaxLines(3)
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                }, LinearLayout.LayoutParams(0, -2, 1f))
+                addView(activity.iconAction(FieldIcon.CLOSE, "Убрать ссылку $caption") {
+                    links = links - link
+                    showLinks()
+                    changed()
+                }, LinearLayout.LayoutParams(activity.dp(48), activity.dp(48)).apply { marginStart = activity.dp(6) })
+            }, -1, -2)
+            linkList.addSpace(6)
+        }
+    }
+
+    private fun promptLink() {
+        activity.fieldworkSheet("Добавить ссылку") { dialog ->
+            val url = activity.edit("Адрес сайта", "").apply {
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            }
+            val title = activity.edit("Название ресурса (необязательно)", "")
+            addView(url, -1, -2)
+            addSpace(8)
+            addView(title, -1, -2)
+            addSpace(10)
+            addView(activity.action("Добавить", primary = true) {
+                val address = url.text.toString().trim()
+                val uri = webUri(if (address.startsWith("www.", ignoreCase = true)) "https://$address" else address)
+                when {
+                    uri == null -> url.error = "Введите адрес сайта с http:// или https://"
+                    links.any { it.url == uri.toString() } -> url.error = "Эта ссылка уже добавлена"
+                    else -> {
+                        links = links + WebLink(uri.toString(), title.text.toString().trim())
+                        showLinks()
+                        changed()
+                        dialog.dismiss()
+                    }
+                }
+            }, -1, -2)
+        }
     }
 
     private fun addMedia() {
@@ -651,11 +707,12 @@ internal class JournalEditor(
                 period = text("period"), culture = text("culture"), condition = text("condition"),
                 inventory = text("inventory"), author = text("author"), confidence = text("confidence"),
                 context = text("context"), sources = text("sources"), attachments = attachments,
-                uncertainFields = uncertain.toSet(), parentId = parentId, customColor = customColor)
+                uncertainFields = uncertain.toSet(), parentId = parentId, customColor = customColor, links = links)
         },
         note = note?.let {
             it.copy(title = text("title"), body = text("body"), author = text("author"), weather = text("weather"),
-                siteId = linkedSite, tripId = linkedTrip, created = timestamp ?: it.created, attachments = attachments)
+                siteId = linkedSite, tripId = linkedTrip, created = timestamp ?: it.created, attachments = attachments,
+                links = links)
         },
         isNew = isNew, dirty = hasUnsavedChanges, removed = removedAttachments.toSet(), staged = stagedAttachments.toSet(),
         compact = draft.compact, tripId = draft.tripId

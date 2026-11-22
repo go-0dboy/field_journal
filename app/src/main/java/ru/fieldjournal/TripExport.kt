@@ -71,10 +71,10 @@ internal fun writeTripKit(contents: TripContents, out: OutputStream, fileFor: (S
         text("objects.geojson", JSONObject().put("type", "FeatureCollection").put("features", JSONArray(features)).toString())
         if (contents.points.isNotEmpty()) entry("track.gpx") { writeTripGpx(contents, zip) }
         text("observations.csv", buildString {
-            appendLine("note_id,site_id,trip_id,title,observed_at,author,weather,description")
+            appendLine("note_id,site_id,trip_id,title,observed_at,author,weather,description,links")
             for (note in contents.notes) {
                 appendLine(csv(note.id, note.siteId, contents.trip.id, note.title, Instant.ofEpochMilli(note.created).toString(),
-                    note.author, note.weather, note.body))
+                    note.author, note.weather, note.body, note.links.takeIf { it.isNotEmpty() }?.linksJson()?.toString()))
             }
         })
         text("attachments.csv", buildString {
@@ -95,6 +95,7 @@ internal fun writeTripKit(contents: TripContents, out: OutputStream, fileFor: (S
             Добавьте observations.csv и attachments.csv как таблицы UTF-8.
             Связь объекта и наблюдения задаётся по site_id. Файлы привязаны
             по site_id и note_id. Колонка path содержит путь к файлу от корня комплекта.
+            Поле links содержит адреса и названия интернет-ресурсов в формате JSON.
         """.trimIndent())
         for ((link, file) in attachments) entry(link.path) { file.inputStream().use { it.copyTo(zip) } }
     }

@@ -102,6 +102,7 @@ internal fun MainActivity.editStructuredFields(
 ) {
     val dialog = AlertDialog.Builder(this).setTitle(title).setNegativeButton("Применить", null)
         .setPositiveButton("Отмена", null).create()
+    dialog.setCanceledOnTouchOutside(false)
     val fields = linkedMapOf<String, android.widget.EditText>()
     val form = vertical().apply {
         setPadding(dp(18), dp(8), dp(18), dp(16))
@@ -125,11 +126,24 @@ internal fun MainActivity.editStructuredFields(
     }
     dialog.setView(ScrollView(this).apply { addView(form) })
     dialog.show()
-    dialog.getButton(DialogInterface.BUTTON_NEGATIVE).setOnClickListener {
-        val values = fields.mapValues { it.value.text.toString().trim() }.filterValues(String::isNotEmpty)
-        onSave(current - captions.keys + values)
+    fun values() = current - captions.keys +
+        fields.mapValues { it.value.text.toString().trim() }.filterValues(String::isNotEmpty)
+    fun applyFields() {
+        onSave(values())
         dialog.dismiss()
     }
+    fun confirmExit() {
+        if (values() == current) {
+            dialog.dismiss()
+            return
+        }
+        if (!dialog.isShowing) dialog.show()
+        fieldPrompt("Применить изменения формы?", PromptAction("Применить", ::applyFields),
+            secondary = PromptAction("Отбросить изменения", dialog::dismiss), destructive = true)
+    }
+    dialog.getButton(DialogInterface.BUTTON_NEGATIVE).setOnClickListener { applyFields() }
+    dialog.getButton(DialogInterface.BUTTON_POSITIVE).setOnClickListener { confirmExit() }
+    dialog.setOnCancelListener { confirmExit() }
 }
 
 private fun entryName(entry: ResearchEntry): String = sequenceOf("title", "claim", "number", "result", "relation")
@@ -164,9 +178,15 @@ internal fun MainActivity.editResearch(
     onSave: (ResearchCard) -> Unit
 ) {
     var value = cardValue
-    fieldworkSheet(title) { dialog ->
+    fieldworkSheet(title) {
         val list = vertical()
         addView(list, -1, -2)
+        fun update(next: ResearchCard) {
+            if (next != value) {
+                onSave(next)
+                value = next
+            }
+        }
         fun redraw() {
             list.removeAllViews()
             val captions = when {
@@ -182,7 +202,8 @@ internal fun MainActivity.editResearch(
                 val defaults = if (located == null || "location_status" in value.fields) value.fields else
                     value.fields + ("location_status" to if (located) "Ориентир по источнику" else "Не локализован")
                 editStructuredFields("Реквизиты", captions, defaults) { fields ->
-                    value = value.copy(fields = fields); redraw()
+                    update(value.copy(fields = fields))
+                    redraw()
                 }
             }, -1, -2)
             for (entry in value.entries) card(list, entryName(entry), forms[entry.kind]?.title.orEmpty()) {
@@ -200,7 +221,8 @@ internal fun MainActivity.editResearch(
                     if (entry.kind != "location_history") addView(action("Изменить") {
                         detail.dismiss()
                         editEntry(entry, attachments) { edited ->
-                            value = value.copy(entries = value.entries.map { if (it.id == edited.id) edited else it }); redraw()
+                            update(value.copy(entries = value.entries.map { if (it.id == edited.id) edited else it }))
+                            redraw()
                         }
                     }, -1, -2)
                     if (entry.previous.isNotEmpty()) addView(action("История изменений · ${entry.previous.size}") {
@@ -211,7 +233,7 @@ internal fun MainActivity.editResearch(
                     }, -1, -2)
                     if (entry.kind != "location_history") addView(action("Убрать из карточки") {
                         detail.dismiss()
-                        value = value.copy(entries = value.entries.filterNot { it.id == entry.id })
+                        update(value.copy(entries = value.entries.filterNot { it.id == entry.id }))
                         redraw()
                     }, -1, -2)
                 }
@@ -227,15 +249,13 @@ internal fun MainActivity.editResearch(
                     .setItems(kinds.map { forms.getValue(it).title }.toTypedArray()) { _, index ->
                         val entry = ResearchEntry(kind = kinds[index], fields = emptyMap())
                         editEntry(entry, attachments) { saved ->
-                            if (saved.fields.isNotEmpty()) value = value.copy(entries = value.entries + saved)
+                            if (saved.fields.isNotEmpty()) update(value.copy(entries = value.entries + saved))
                             redraw()
                         }
                     }.setPositiveButton("Отмена", null).show()
             }, -1, -2)
         }
         redraw()
-        addSpace(8)
-        addView(action("Применить", true) { onSave(value); dialog.dismiss() }, -1, -2)
     }
 }
 

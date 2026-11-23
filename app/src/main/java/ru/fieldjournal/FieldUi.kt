@@ -77,7 +77,7 @@ internal fun Context.action(
 internal fun Context.edit(hint: String, value: String, lines: Int = 1) = EditText(this).apply {
     background = android.graphics.drawable.StateListDrawable().apply {
         addState(intArrayOf(android.R.attr.state_focused), panel(Palette.white, 14, Palette.accent))
-        addState(intArrayOf(), panel(Palette.control, 14))
+        addState(intArrayOf(), panel(Palette.white, 14, Palette.border))
     }
     textSize = 16f
     setTextColor(Palette.ink)
@@ -210,6 +210,26 @@ internal fun drawSymbol(canvas: Canvas, x: Float, y: Float, radius: Float, type:
     canvas.restore()
 }
 
+internal fun Context.secondaryAction(caption: String, icon: FieldIcon? = null, click: () -> Unit) =
+    action(caption, click = click).apply {
+        gravity = Gravity.CENTER_VERTICAL or Gravity.START
+        setTextColor(Palette.accent)
+        background = RippleDrawable(Palette.ripple, null, panel(Color.WHITE, 14))
+        if (icon != null) {
+            setCompoundDrawablesRelativeWithIntrinsicBounds(fieldGlyph(icon, 20, Palette.accent), null, null, null)
+            compoundDrawablePadding = dp(8)
+        }
+    }
+
+internal fun Context.diaryPageAction(title: String, selected: Boolean, click: () -> Unit) =
+    action(title, click = click).apply {
+        isSelected = selected
+        setPadding(dp(4), dp(3), dp(4), dp(3))
+        setTextColor(if (selected) Palette.accent else Palette.heading)
+        background = RippleDrawable(Palette.ripple,
+            panel(if (selected) Palette.white else Color.TRANSPARENT, 13), panel(Color.WHITE, 13))
+    }
+
 internal fun Context.navigationAction(title: String, icon: FieldIcon, selected: Boolean, click: () -> Unit) =
     action(title, click = click).apply {
         textSize = 12f
@@ -272,17 +292,18 @@ internal enum class FieldIcon(val description: String, val addsItem: Boolean = f
     GPS_POINT("Отметить здесь по GPS", true),
     GPS_VERTEX("Добавить вершину по GPS", true),
     LAYERS("Слои"),
+    VISIBLE_OBJECTS("Объекты в видимой области"),
     SET_POINT("Установить точку"),
     DONE_AREA("Готово"),
     CANCEL("Отмена"),
     CLOSE("Закрыть"),
     BACK("Назад"),
     ADD_VERTEX("Добавить вершину в центр карты", true),
-    UNDO_VERTEX("Удалить последнюю вершину"),
+    UNDO_VERTEX("Отменить последнее изменение контура"),
     ZOOM_IN("Приблизить"),
     ZOOM_OUT("Отдалить"),
     LOCATION("Моё место"),
-    PARENT_AREA("Родительская область"),
+    PARENT_AREA("Выбрать родительскую область"),
     CAMERA("Снять фото", true),
     IMAGE("Добавить фото", true),
     DOCUMENT("Добавить документ", true),
@@ -311,10 +332,14 @@ internal fun Context.iconAction(
 
 internal fun Context.mapAction(icon: FieldIcon, primary: Boolean = false, click: () -> Unit) =
     iconAction(icon, primary = primary, click = click).apply {
-        background = RippleDrawable(Palette.ripple,
-            panel(if (primary) Palette.floatingAccent else Palette.floatingSurface,
-                if (icon == FieldIcon.LOCATION) 24 else 15, if (primary) 0 else Palette.border), null)
+        val fill = panel(if (primary) Palette.floatingAccent else Palette.floatingSurface,
+            if (icon == FieldIcon.LOCATION) 24 else 15, if (primary) 0 else Palette.border)
+        val states = arrayOf(intArrayOf(-android.R.attr.state_enabled), intArrayOf())
+        fill.setColor(ColorStateList(states,
+            intArrayOf(Palette.control, if (primary) Palette.floatingAccent else Palette.floatingSurface)))
+        background = RippleDrawable(Palette.ripple, fill, null)
         elevation = dp(3).toFloat()
+        imageTintList = ColorStateList(states, intArrayOf(Palette.muted, if (primary) Color.WHITE else Palette.heading))
     }
 
 internal fun Context.addAction(caption: String, icon: FieldIcon, primary: Boolean = true, click: () -> Unit) =
@@ -328,9 +353,13 @@ internal fun Context.addAction(caption: String, icon: FieldIcon, primary: Boolea
         setCompoundDrawablesRelative(glyph, null, null, null)
     }
 
-private class FieldIconDrawable(
+internal fun Context.fieldGlyph(icon: FieldIcon, size: Int, color: Int, outline: Boolean = false) =
+    FieldIconDrawable(dp(size), icon, color, adding = !outline && icon.addsItem, outline = outline)
+
+internal class FieldIconDrawable(
     private val size: Int, private val icon: FieldIcon, color: Int,
-    private val adding: Boolean = icon.addsItem
+    private val adding: Boolean = icon.addsItem,
+    private val outline: Boolean = false
 ) : android.graphics.drawable.Drawable() {
     private val pen = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         this.color = color
@@ -355,6 +384,9 @@ private class FieldIconDrawable(
         if (adding) {
             canvas.translate(0f, 4f)
             canvas.scale(0.8f, 0.8f)
+        }
+        if (outline) {
+            pen.setShadowLayer(1.5f, 0f, 0f, Color.WHITE)
         }
         when (icon) {
             FieldIcon.MAP -> path {
@@ -426,6 +458,12 @@ private class FieldIconDrawable(
                 moveTo(15f, 5f)
                 lineTo(8f, 12f)
                 lineTo(15f, 19f)
+            }
+            FieldIcon.VISIBLE_OBJECTS -> {
+                for (y in listOf(6f, 12f, 18f)) {
+                    circle(5f, y, 1f)
+                    line(10f, y, 21f, y)
+                }
             }
             FieldIcon.PARENT_AREA -> {
                 canvas.drawRoundRect(3f, 4f, 21f, 20f, 3f, 3f, pen)

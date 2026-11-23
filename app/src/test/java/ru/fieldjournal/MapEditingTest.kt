@@ -338,7 +338,41 @@ class MapEditingTest {
             root.icon(FieldIcon.AREA).performClick()
             root.icon(FieldIcon.ADD_VERTEX).performClick()
             assertTrue(root.text("${point.display()} ±8 м · Выс. 123 м").isShown)
-            assertTrue(root.descendants().filterIsInstance<TextView>().any { it.text.startsWith("Вершин 1 ·") })
+            assertTrue(root.text("1 из 3 вершин").isShown)
+        } finally {
+            controller.pause().stop().destroy()
+        }
+    }
+
+    @Config(qualifiers = "w320dp-h640dp-mdpi")
+    @Test fun narrowAreaToolbarKeepsCancelVisibleAndUndoesRemovalAndMove() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        try {
+            val root = controller.get().window.decorView
+            root.icon(FieldIcon.AREA).performClick()
+            layout(root, 320)
+            val finish = root.icon(FieldIcon.DONE_AREA)
+            val cancel = root.icon(FieldIcon.CANCEL)
+            val undo = root.icon(FieldIcon.UNDO_VERTEX)
+            assertFalse(finish.isEnabled)
+            assertFalse(undo.isEnabled)
+            assertTrue(cancel.width >= 48)
+            assertTrue(IntArray(2).also(cancel::getLocationOnScreen)[0] + cancel.width <= root.width)
+
+            val map = root.descendants().filterIsInstance<FieldMap>().single()
+            val points = listOf(Coordinate(59.0, 33.0), Coordinate(59.0, 33.01), Coordinate(59.01, 33.01))
+            points.forEach { map.onTap?.invoke(it, null) }
+            assertTrue(finish.isEnabled)
+            map.onVertexTap?.invoke(1)
+            assertEquals(listOf(points[0], points[2]), map.draft)
+            assertFalse(finish.isEnabled)
+            root.text("Вернуть").performClick()
+            assertEquals(points, map.draft)
+            assertTrue(finish.isEnabled)
+            map.onVertexMove?.invoke(1, Coordinate(59.0, 33.02))
+            assertNotEquals(points, map.draft)
+            undo.performClick()
+            assertEquals(points, map.draft)
         } finally {
             controller.pause().stop().destroy()
         }
@@ -346,7 +380,7 @@ class MapEditingTest {
 
     private fun confirmSave(activity: MainActivity) {
         activity.closeEditor()
-        ShadowAlertDialog.getLatestAlertDialog().window!!.decorView.text("Сохранить").performClick()
+        ShadowAlertDialog.getLatestAlertDialog().window!!.decorView.text("Сохранить объект").performClick()
         shadowOf(Looper.getMainLooper()).idle()
     }
 
@@ -357,10 +391,10 @@ class MapEditingTest {
         shadowOf(Looper.getMainLooper()).idle()
     }
 
-    private fun layout(view: View) {
-        view.measure(View.MeasureSpec.makeMeasureSpec(360, View.MeasureSpec.EXACTLY),
+    private fun layout(view: View, width: Int = 360) {
+        view.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
             View.MeasureSpec.makeMeasureSpec(700, View.MeasureSpec.EXACTLY))
-        view.layout(0, 0, 360, 700)
+        view.layout(0, 0, width, 700)
     }
 
     private fun tap(view: View, x: Float, y: Float) {

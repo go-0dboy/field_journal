@@ -81,7 +81,7 @@ class EditorNavigationTest {
             restoredRoot.action("Открыть ссылку ${siteLink.title}").performClick()
             assertEquals(siteLink.url, shadowOf(restored).nextStartedActivity.dataString)
             restoredRoot.action("Сохранить и закрыть").performClick()
-            chooseConfirmation("Сохранить")
+            chooseConfirmation("Сохранить объект")
             assertEquals(listOf(siteLink), restored.store.site(site.id)?.links)
 
             restored.createNote(site.id, compact = true)
@@ -107,7 +107,7 @@ class EditorNavigationTest {
             sheet.input("Адрес сайта").setText(noteLink.url)
             sheet.text("Добавить").performClick()
             restoredRoot.action("Сохранить и закрыть").performClick()
-            chooseConfirmation("Сохранить")
+            chooseConfirmation("Сохранить запись")
             val saved = restored.store.notes().single { it.siteId == site.id }
             assertEquals(noteBody, saved.body)
             assertEquals(listOf(noteLink), saved.links)
@@ -143,7 +143,7 @@ class EditorNavigationTest {
             root.input("Заголовок").setText("Повторный обход")
             root.action("Сохранить и закрыть").performClick()
             assertFalse(controller.get().store.notes().any { it.title == "Повторный обход" })
-            chooseConfirmation("Сохранить")
+            chooseConfirmation("Сохранить запись")
             root.text("Карточка объекта")
             root.text("Сохранено · Стоянка у реки")
             assertTrue(controller.get().store.notes().any { it.siteId == site.id && it.title == "Повторный обход" })
@@ -168,7 +168,7 @@ class EditorNavigationTest {
             assertFalse(map.editingGeometry)
             val confirmation = ShadowAlertDialog.getLatestAlertDialog().window!!.decorView
             confirmation.text("Сохранить изменения?")
-            chooseConfirmation("Сохранить")
+            chooseConfirmation("Сохранить объект")
             assertTrue(root.text("Новая запись").isShown)
             val saved = requireNotNull(activity.store.site(original.id))
             assertEquals("Стоянка у реки", saved.title)
@@ -239,7 +239,7 @@ class EditorNavigationTest {
             assertEquals(1, root.descendants().filterIsInstance<TextView>().count { it.text == file.name })
             assertTrue(restored.store.site(site.id)!!.attachments.isEmpty())
             restored.closeEditor()
-            chooseConfirmation("Сохранить")
+            chooseConfirmation("Сохранить объект")
             val saved = restored.store.site(site.id)!!.attachments.single()
             assertEquals("image bytes", restored.store.attachmentFile(saved.id).readText())
         } finally {
@@ -286,7 +286,7 @@ class EditorNavigationTest {
             chooseConfirmation("Отмена")
             assertEquals("Черновая запись", restored.input("Заголовок").text.toString())
             restored.action("Назад").performClick()
-            chooseConfirmation("Не сохранять")
+            chooseConfirmation("Отбросить изменения")
             restored.text("Дневник")
             assertTrue(activity.store.notes().all { it.id in knownIds })
         } finally {
@@ -307,7 +307,7 @@ class EditorNavigationTest {
             root.descendants().filterIsInstance<JournalEditor>().single().stageAttachment(attachment)
             assertEquals(original, activity.store.site(original.id))
             root.action("Назад").performClick()
-            chooseConfirmation("Не сохранять")
+            chooseConfirmation("Отбросить изменения")
             assertEquals(original, activity.store.site(original.id))
             assertFalse(activity.store.attachmentFile(attachment.id).exists())
         } finally {
@@ -332,7 +332,7 @@ class EditorNavigationTest {
             root.input("Короткая заметка").setText("Северная граница проверена")
             root.descendants().filterIsInstance<JournalEditor>().single().stageAttachment(photo)
             root.action("Назад").performClick()
-            chooseConfirmation("В черновики")
+            chooseConfirmation("Оставить в черновиках")
             assertTrue(activity.store.noteSummaries(site.id).isEmpty())
             assertEquals(1, activity.store.draftCount())
         } finally {
@@ -349,7 +349,7 @@ class EditorNavigationTest {
             assertEquals("Северная граница проверена", root.input("Короткая заметка").text.toString())
             root.text(photo.name)
             root.action("Сохранить и закрыть").performClick()
-            chooseConfirmation("Сохранить")
+            chooseConfirmation("Сохранить запись")
             assertEquals(0, reopened.store.draftCount())
             val contents = reopened.store.trips.contents(trip.id)
             val note = contents.notes.single()
@@ -387,8 +387,13 @@ class EditorNavigationTest {
             root.text("Скрыть маршрут").performClick()
             root.text("Показать маршрут")
             root.text("Карта").performClick()
-            root.text("Показать скрытый маршрут").performClick()
+            root.action("Слои").performClick()
+            val layers = ShadowAlertDialog.getLatestAlertDialog()
+            val route = layers.window!!.decorView.text("Маршрут выезда") as android.widget.Switch
+            assertFalse(route.isChecked)
+            route.performClick()
             assertTrue(activity.showingTripTrack(trip.id))
+            layers.dismiss()
             assertFalse(root.text("Записывается трек выезда").isShown)
         } finally {
             activity.deleteTrip(trip.id)
@@ -451,7 +456,7 @@ class EditorNavigationTest {
             activity.openSite(group.id)
             layout(root)
             fun buttons(vararg labels: String) = labels.map { root.action(it) as android.widget.ImageButton }
-            val links = buttons("Родительская область", "Добавить точку внутри", "Добавить область внутри")
+            val links = buttons("Выбрать родительскую область", "Добавить точку внутри", "Добавить область внутри")
             val attachments = buttons("Снять фото", "Добавить фото", "Добавить документ")
             for (row in listOf(links, attachments)) {
                 assertTrue(row.all { it.parent === row.first().parent && it.height >= 48 && it.tooltipText == it.contentDescription })
@@ -485,6 +490,41 @@ class EditorNavigationTest {
         }
     }
 
+    @Test fun scientificFormBackPreservesInputAndApplyingWritesOnlyTheDraft() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        try {
+            val activity = controller.get()
+            val site = Site(title = "Участок", vertices = listOf(Coordinate(59.0, 33.0)))
+            activity.store.save(site)
+            activity.openSite(site.id)
+            val root = activity.window.decorView
+            root.text("Научная карточка").performClick()
+            val panel = ShadowAlertDialog.getLatestAlertDialog()
+            panel.window!!.decorView.text("Добавить научную запись").performClick()
+            val choices = ShadowAlertDialog.getLatestAlertDialog()
+            val kinds = choices.listView
+            val index = (0 until kinds.count).first { kinds.adapter.getItem(it).toString() == "Осмотр участка" }
+            kinds.performItemClick(kinds.adapter.getView(index, null, kinds), index, kinds.adapter.getItemId(index))
+            val form = ShadowAlertDialog.getLatestAlertDialog()
+            form.window!!.decorView.input("Результат").setText("Зафиксирована кладка")
+            form.cancel()
+            shadowOf(Looper.getMainLooper()).idle()
+            chooseConfirmation("Отмена")
+            assertTrue(form.isShowing)
+            assertEquals("Зафиксирована кладка", form.window!!.decorView.input("Результат").text.toString())
+            form.window!!.decorView.text("Применить").performClick()
+            panel.window!!.decorView.action("Закрыть").performClick()
+            assertFalse(panel.isShowing)
+            assertTrue(activity.store.site(site.id)!!.research.entries.isEmpty())
+            assertEquals("Зафиксирована кладка", activity.store.draft(site.id)!!.site!!.research.entries.single().fields["result"])
+            root.action("Сохранить и закрыть").performClick()
+            chooseConfirmation("Сохранить объект")
+            assertEquals("Зафиксирована кладка", activity.store.site(site.id)!!.research.entries.single().fields["result"])
+        } finally {
+            controller.pause().stop().destroy()
+        }
+    }
+
     private fun chooseConfirmation(button: String) {
         ShadowAlertDialog.getLatestAlertDialog().window!!.decorView.text(button).performClick()
         shadowOf(Looper.getMainLooper()).idle()
@@ -513,8 +553,8 @@ class EditorNavigationTest {
 
     private fun View.assertNoteSections(bodyHint: String) {
         val sections = listOf(
-            text("Описание"), input("Заголовок"), input(bodyHint), text("Ссылки"),
-            text("Фотографии и материалы"), text("Учёт и источники"),
+            text("Описание"), input("Заголовок"), input(bodyHint), text("Фотографии и материалы"),
+            text("Ссылки"), text("Учёт и источники"),
             input("Автор / группа"), input("Погода и условия работ")
         )
         val views = descendants().toList()

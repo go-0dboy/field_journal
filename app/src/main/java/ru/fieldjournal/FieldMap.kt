@@ -513,7 +513,17 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
         return null
     }
 
-    private fun drawShape(canvas: Canvas, rings: List<List<Coordinate>>, color: Int, closed: Boolean) {
+    fun visibleSites(top: Int): List<Site> {
+        val viewport = Region(0, top.coerceAtLeast(0), width, height - footerInset)
+        if (viewport.isEmpty) return emptyList()
+        return sites.filter { site ->
+            val point = pixel(site.anchor)
+            viewport.contains(point.x.toInt(), point.y.toInt()) ||
+                (site.area && Region().setPath(shapePath(listOf(site.vertices) + site.holes, true), viewport))
+        }.sortedBy(Site::title)
+    }
+
+    private fun shapePath(rings: List<List<Coordinate>>, closed: Boolean): Path {
         val path = Path().apply { fillType = Path.FillType.EVEN_ODD }
         for (ring in rings) {
             for ((index, coordinate) in ring.withIndex()) {
@@ -522,6 +532,11 @@ internal class FieldMap(context: Context, private val tiles: MapTiles) : View(co
             }
             if (closed) path.close()
         }
+        return path
+    }
+
+    private fun drawShape(canvas: Canvas, rings: List<List<Coordinate>>, color: Int, closed: Boolean) {
+        val path = shapePath(rings, closed)
         if (closed) {
             paint.color = color and 0x00ffffff or 0x48000000
             canvas.drawPath(path, paint)

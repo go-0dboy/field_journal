@@ -18,7 +18,8 @@ internal fun Context.fieldPrompt(
     coordinates: String? = null,
     destructive: Boolean = false,
     choices: List<PromptAction> = emptyList(),
-    detail: String? = null
+    detail: String? = null,
+    alternative: PromptAction? = null
 ) {
     val dialog = AlertDialog.Builder(this).create()
     val body = vertical().apply {
@@ -65,6 +66,12 @@ internal fun Context.fieldPrompt(
         val left = if (secondary == null) main else {
             addView(main, -1, -2)
             addSpace(6)
+            alternative?.let {
+                addView(secondaryAction(it.title) {
+                    dialog.dismiss()
+                    it.run()
+                }, -1, -2)
+            }
             action(secondary.title) {
                 dialog.dismiss()
                 secondary.run()
@@ -97,7 +104,8 @@ private fun AlertDialog.showFieldSheet() {
 
 
 internal fun Context.fieldworkSheet(
-    title: String, onCancel: (() -> Unit)? = null, populate: LinearLayout.(AlertDialog) -> Unit
+    title: String, onCancel: (() -> Unit)? = null, scrollBody: Boolean = true,
+    populate: LinearLayout.(AlertDialog) -> Unit
 ): AlertDialog {
     val dialog = AlertDialog.Builder(this).create()
     val body = vertical().apply {
@@ -112,10 +120,11 @@ internal fun Context.fieldworkSheet(
             }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(8) })
             addView(iconAction(FieldIcon.CLOSE) { dialog.cancel() }, dp(48), dp(48))
         }, -1, -2)
-        addView(ScrollView(this@fieldworkSheet).apply {
+        val content = if (scrollBody) ScrollView(this@fieldworkSheet).apply {
             addView(body)
             clipToPadding = false
-        }, LinearLayout.LayoutParams(-1, -2, 1f))
+        } else body
+        addView(content, LinearLayout.LayoutParams(-1, -2, 1f))
     }
     if (onCancel != null) dialog.setOnCancelListener { onCancel() }
     dialog.setView(container, 0, 0, 0, 0)

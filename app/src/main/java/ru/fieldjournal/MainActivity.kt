@@ -42,8 +42,8 @@ class MainActivity : Activity() {
     private enum class Tab(val title: String, val icon: FieldIcon) {
         MAP("Карта", FieldIcon.MAP), SITES("Объекты", FieldIcon.POINT), NOTES("Дневник", FieldIcon.NOTE), SETTINGS("Данные", FieldIcon.DATA)
     }
-    private enum class DiaryPage(val title: String, val icon: FieldIcon) {
-        RECORDS("Записи", FieldIcon.NOTE), TRIPS("Выезды", FieldIcon.TRIP), DRAFTS("Черновики", FieldIcon.DRAFT)
+    private enum class DiaryPage(val title: String) {
+        RECORDS("Записи"), TRIPS("Выезды"), DRAFTS("Черновики")
     }
     private var diaryPage = DiaryPage.RECORDS
     private var diaryTripId: String? = null
@@ -84,7 +84,12 @@ class MainActivity : Activity() {
     private lateinit var gps: FieldLocation
     private lateinit var root: LinearLayout
     private lateinit var header: LinearLayout
-    private lateinit var notice: TextView
+    private lateinit var notice: LinearLayout
+    private lateinit var noticeText: TextView
+    private lateinit var noticeAction: TextView
+    private var undoVertexButton: View? = null
+    private var finishAreaButton: View? = null
+    private var displayedCoordinateSource: CoordinateSource? = null
     private lateinit var screen: FrameLayout
     private lateinit var content: FrameLayout
     private lateinit var nav: LinearLayout
@@ -118,6 +123,7 @@ class MainActivity : Activity() {
     private var selectedMeasurement: LocationFix? = null
     private val vertices = mutableListOf<Coordinate>()
     private val vertexMeasurements = mutableMapOf<Coordinate, LocationFix>()
+    private val boundaryHistory = BoundaryHistory()
     private var keyboardVisible = false
     private var catalogIndex = 0
     private var catalogOffset = 0
@@ -224,11 +230,16 @@ class MainActivity : Activity() {
             isFocusableInTouchMode = true
         }
         header = vertical()
-        notice = label("", 14f, android.graphics.Color.WHITE).apply {
+        noticeText = label("", 14f, Color.WHITE).apply {
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+        }
+        noticeAction = action("Вернуть", primary = true) { }.apply { visibility = View.GONE }
+        notice = horizontal().apply {
             visibility = View.GONE
             background = panel(Palette.notice, 18)
             setPadding(dp(16), dp(10), dp(16), dp(10))
-            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+            addView(noticeText, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(noticeAction, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) })
         }
         content = FrameLayout(this)
         nav = horizontal().apply {
@@ -558,9 +569,11 @@ class MainActivity : Activity() {
                 map.onTap?.invoke(point, null)
             }
         }
-        map.onVertexTap = { index -> removeVertex(index) }
+        map.onVertexTap = ::removeVertex
         map.onVertexMove = { index, point ->
-            if (index in vertices.indices) {
+            if (index in vertices.indices && vertices[index] != point) {
+                dismissNotice()
+                boundaryHistory.remember(vertices, vertexMeasurements)
                 vertexMeasurements.remove(vertices[index])
                 vertices[index] = point
                 updateMapDraft()
@@ -579,15 +592,7 @@ class MainActivity : Activity() {
         }
         mapArea = mapCaption(12f)
         mapComparisonStatus = mapCaption(12f).apply { text = "Старая слева · современная справа" }
-        mapTripStatus = mapCaption(12f).apply {
-            setOnClickListener {
-                if (drawMode == DrawMode.NONE) {
-                    val hidden = hiddenTripId
-                    if (hidden != null) showTripOnMap(hidden)
-                    else TripRecording.tripId?.let(::showTripDetails)
-                }
-            }
-        }
+        mapTripStatus = mapCaption(12f).apply { text = "Записывается трек выезда" }
         mapPanel = FrameLayout(this).apply {
             addView(map, FrameLayout.LayoutParams(-1, -1))
             statusBarScrim = View(this@MainActivity).apply { setBackgroundColor(Palette.floatingSurface) }
@@ -651,6 +656,13 @@ class MainActivity : Activity() {
     private fun updateMapStatus() {
         if (!this::mapCoordinates.isInitialized) return
         val measured = recentFix()
+        val source = coordinateSource()
+        if (displayedCoordinateSource != source) {
+            mapCoordinates.setCompoundDrawablesRelativeWithIntrinsicBounds(
+                fieldGlyph(source.icon, 16, Palette.heading, outline = true), null, null, null)
+            mapCoordinates.compoundDrawablePadding = dp(5)
+            displayedCoordinateSource = source
+        }
         val point = when (drawMode) {
             DrawMode.NONE -> if (tiles.coordinatesAtDevice) measured?.point else map.center
             DrawMode.POINT, DrawMode.MOVE_POINT -> selectedPoint ?: map.center
@@ -658,7 +670,7 @@ class MainActivity : Activity() {
         }
         if (point == null) {
             mapCoordinates.text = if (tracking) "Моя позиция · определяю…" else "Моя позиция · нет замера"
-            mapCoordinates.contentDescription = null
+            mapCoordinates.contentDescription = mapCoordinates.text
         } else {
             val pointFix = selectedMeasurement ?: measured?.takeIf { it.point == point }
             val savedPoint = geometryDraft?.site?.takeIf { it.vertices.singleOrNull() == point }
@@ -670,58 +682,71 @@ class MainActivity : Activity() {
                 append(" · Выс. $height")
             }
             mapCoordinates.contentDescription = buildString {
-                val source = when {
-                    pointFix != null && drawMode == DrawMode.NONE && tiles.coordinatesAtDevice -> "Моя позиция"
-                    selectedMeasurement != null -> "Точка по GPS"
-                    selectedPoint != null -> "Выбранная точка"
-                    else -> "Центр карты"
-                }
-                append("$source, ${point.display()}, высота $height")
+                append("${source.title}, ${point.display()}, высота $height")
                 accuracy?.let { append(", точность координат $it") }
             }
         }
         val drawingArea = drawMode == DrawMode.AREA || drawMode == DrawMode.MOVE_AREA
         mapArea.visibility = if (drawingArea) View.VISIBLE else View.GONE
-        if (drawingArea) mapArea.text = "Вершин ${vertices.size} · ${areaLabel(areaSquareMeters(vertices))}"
+        if (drawingArea) mapArea.text = if (vertices.size < 3) "${vertices.size} из 3 вершин"
+            else "Вершин ${vertices.size} · ${areaLabel(areaSquareMeters(vertices))}"
+        finishAreaButton?.isEnabled = vertices.size >= 3
+        undoVertexButton?.isEnabled = boundaryHistory.canUndo
         mapComparisonStatus.visibility = if (map.historicalDivider != null && tiles.historicalEnabled) View.VISIBLE else View.GONE
-        mapTripStatus.text = if (hiddenTripId != null) "Показать скрытый маршрут" else "Записывается трек выезда"
-        mapTripStatus.visibility = if (TripRecording.tripId != null || hiddenTripId != null) View.VISIBLE else View.GONE
+        mapTripStatus.visibility = if (TripRecording.tripId != null) View.VISIBLE else View.GONE
     }
 
     private fun addVertex(point: Coordinate) {
         if (vertices.size >= 2000) return message("Достигнут предел: 2000 вершин")
         if (vertices.any { it.latitude == point.latitude && it.longitude == point.longitude })
             return message("Такая вершина уже добавлена")
+        dismissNotice()
+        boundaryHistory.remember(vertices, vertexMeasurements)
         vertices.add(point)
         updateMapDraft()
     }
 
     private fun removeVertex(index: Int) {
         if (index !in vertices.indices) return
+        boundaryHistory.remember(vertices, vertexMeasurements)
         vertexMeasurements.remove(vertices.removeAt(index))
+        updateMapDraft()
+        message("Вершина удалена", ::undoBoundaryChange)
+    }
+
+    private fun undoBoundaryChange() {
+        val previous = boundaryHistory.undo() ?: return
+        dismissNotice()
+        vertices.clear()
+        vertices.addAll(previous.vertices)
+        vertexMeasurements.clear()
+        vertexMeasurements.putAll(previous.measurements)
         updateMapDraft()
     }
 
     private fun updateControls() {
-        updateMapStatus()
+        undoVertexButton = null
+        finishAreaButton = null
+        (mapArea.parent as? android.view.ViewGroup)?.removeView(mapArea)
         header.removeAllViews()
         header.addView(mapCoordinates, -1, -2)
         header.addView(horizontal().apply {
             setPadding(dp(12), dp(5), dp(12), dp(6))
             clipChildren = false
             clipToPadding = false
-            fun control(icon: FieldIcon, primary: Boolean = false, click: () -> Unit) {
-                addView(mapAction(icon, primary, click),
-                    LinearLayout.LayoutParams(dp(48), dp(48)).apply {
+            fun control(icon: FieldIcon, primary: Boolean = false, click: () -> Unit) =
+                mapAction(icon, primary, click).also { button ->
+                    addView(button, LinearLayout.LayoutParams(dp(48), dp(48)).apply {
                         if (childCount > 0) marginStart = dp(4)
                     })
-            }
+                }
             fun spacer() = addView(View(this@MainActivity), LinearLayout.LayoutParams(0, 0, 1f))
             when (drawMode) {
                 DrawMode.NONE -> {
                     control(FieldIcon.POINT, true) { beginDraw(DrawMode.POINT) }
                     control(FieldIcon.AREA) { beginDraw(DrawMode.AREA) }
                     control(FieldIcon.COORDINATES) { showMapCoordinates() }
+                    control(FieldIcon.VISIBLE_OBJECTS) { showVisibleObjects() }
                     spacer()
                     control(FieldIcon.LAYERS) { chooseLayers() }
                 }
@@ -739,14 +764,13 @@ class MainActivity : Activity() {
                     control(FieldIcon.CANCEL) { cancelDraw() }
                 }
                 DrawMode.AREA, DrawMode.MOVE_AREA -> {
-                    control(FieldIcon.LAYERS) { chooseLayers() }
                     control(FieldIcon.ADD_VERTEX) { addVertex(map.center) }
                     control(FieldIcon.GPS_VERTEX) {
                         captureLocation(LocationAction.ADD_VERTEX)
                     }
-                    control(FieldIcon.UNDO_VERTEX) { removeVertex(vertices.lastIndex) }
+                    undoVertexButton = control(FieldIcon.UNDO_VERTEX) { undoBoundaryChange() }
                     spacer()
-                    control(FieldIcon.DONE_AREA, true) {
+                    finishAreaButton = control(FieldIcon.DONE_AREA, true) {
                         val error = polygonError(vertices)
                         if (error == null) saveGeometry(vertices.toList()) else message(error.message)
                     }
@@ -754,9 +778,57 @@ class MainActivity : Activity() {
                 }
             }
         }, -1, -2)
-        header.addView(mapArea, -1, -2)
+        val drawingArea = drawMode == DrawMode.AREA || drawMode == DrawMode.MOVE_AREA
+        if (drawingArea) header.addView(horizontal().apply {
+            setPadding(dp(12), 0, dp(12), 0)
+            mapArea.setPadding(0, dp(3), 0, dp(3))
+            addView(mapArea, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(mapAction(FieldIcon.LAYERS) { chooseLayers() }, dp(48), dp(48))
+        }, -1, -2)
         header.addView(mapComparisonStatus, -1, -2)
         header.addView(mapTripStatus, -1, -2)
+        updateMapStatus()
+    }
+
+    private fun showVisibleObjects() {
+        val visible = map.visibleSites(header.bottom)
+        fieldworkSheet("Объекты в видимой области", scrollBody = false) { dialog ->
+            if (visible.isEmpty()) {
+                empty(this, "Объектов нет", "Переместите карту или измените масштаб.")
+            } else {
+                val results = ListView(this@MainActivity).apply {
+                    adapter = object : android.widget.ArrayAdapter<Site>(
+                        this@MainActivity, android.R.layout.simple_list_item_2, android.R.id.text1, visible
+                    ) {
+                        override fun getView(position: Int, convertView: View?, parent: android.view.ViewGroup): View {
+                            val row = super.getView(position, convertView, parent)
+                            row.minimumHeight = dp(48)
+                            val site = visible[position]
+                            row.findViewById<TextView>(android.R.id.text1).text = site.title
+                            row.findViewById<TextView>(android.R.id.text2).text = site.inventory.ifBlank { site.symbol.title }
+                            return row
+                        }
+                    }
+                    setOnItemClickListener { _, _, index, _ ->
+                        dialog.dismiss()
+                        showSitePreview(visible[index])
+                    }
+                }
+                addView(results, -1, (screen.height * 0.55f).toInt())
+            }
+        }
+    }
+
+    private enum class CoordinateSource(val title: String, val icon: FieldIcon) {
+        CENTER("Центр карты", FieldIcon.COORDINATES),
+        DEVICE("Моя позиция", FieldIcon.LOCATION),
+        POINT("Выбранная точка", FieldIcon.POINT)
+    }
+
+    private fun coordinateSource() = when (drawMode) {
+        DrawMode.NONE -> if (tiles.coordinatesAtDevice) CoordinateSource.DEVICE else CoordinateSource.CENTER
+        DrawMode.POINT, DrawMode.MOVE_POINT -> if (selectedPoint == null) CoordinateSource.CENTER else CoordinateSource.POINT
+        DrawMode.AREA, DrawMode.MOVE_AREA -> CoordinateSource.CENTER
     }
 
     private fun beginDraw(mode: DrawMode) {
@@ -779,7 +851,7 @@ class MainActivity : Activity() {
         val device = tiles.coordinatesAtDevice
         val point = if (device) recentFix()?.point else map.center
         fieldPrompt(
-            title = if (device) "Координаты телефона" else "Координаты центра карты",
+            title = coordinateSource().title,
             primary = point?.let(::copyCoordinates) ?: PromptAction("Определить") {
                 requestLocation(LocationAction.READOUT)
             },
@@ -803,7 +875,7 @@ class MainActivity : Activity() {
 
     private fun showPointCoordinates() {
         val point = selectedPoint ?: map.center
-        fieldPrompt("Координаты точки", copyCoordinates(point), coordinates = point.display())
+        fieldPrompt(coordinateSource().title, copyCoordinates(point), coordinates = point.display())
     }
 
     private fun manualPoint() {
@@ -842,6 +914,7 @@ class MainActivity : Activity() {
     private fun resetDraw() {
         dismissNotice()
         drawMode = DrawMode.NONE
+        boundaryHistory.clear()
         vertices.clear()
         vertexMeasurements.clear()
         geometrySite = null
@@ -1154,6 +1227,27 @@ class MainActivity : Activity() {
                         })
                     }
                 }, -1, -2)
+                val routeId = trackTripId ?: hiddenTripId ?: TripRecording.tripId
+                val route = routeId?.let(store.trips::get)
+                controls.addSpace(12)
+                controls.addView(layerSwitch("Маршрут выезда", trackTripId != null, enabled = route != null) { shown ->
+                    if (route != null) {
+                        if (shown) {
+                            selectTripTrack(route.id)
+                            redrawControls()
+                        } else {
+                            dialog.dismiss()
+                            hideTripTrack(route.id)
+                        }
+                    }
+                }, -1, -2)
+                if (route != null) controls.addView(label(route.title, 13f, Palette.muted), -1, -2)
+                if (trackTripId == null && hiddenTripId != null) {
+                    controls.addView(action("Показать маршрут на карте") {
+                        dialog.dismiss()
+                        showTripOnMap(hiddenTripId ?: return@action)
+                    }, -1, -2)
+                }
                 controls.addSpace(12)
                 val history = tiles.info(MapPackage.HISTORICAL)
                 val references = tiles.info(MapPackage.REFERENCES)
@@ -1366,10 +1460,15 @@ class MainActivity : Activity() {
             resetCatalogPosition()
             render()
         })
-        controls.addView(action(catalogResearchFilter.ifBlank { "Уточнить" }) {
-            val statuses = arrayOf("Все привязки", "Не локализован", "Ориентир по источнику", "Проверен в поле")
+        controls.addView(action(if (catalogResearchFilter == "Не локализован") "Без координат"
+            else catalogResearchFilter.ifBlank { "Привязка" }) {
+            val statuses = arrayOf("Все привязки", "Без координат", "Ориентир по источнику", "Проверен в поле")
             AlertDialog.Builder(this).setTitle("Состояние привязки").setItems(statuses) { _, index ->
-                catalogResearchFilter = if (index == 0) "" else statuses[index]
+                catalogResearchFilter = when (index) {
+                    0 -> ""
+                    1 -> "Не локализован"
+                    else -> statuses[index]
+                }
                 resetCatalogPosition()
                 render()
             }.setPositiveButton("Отмена", null).show()
@@ -1404,7 +1503,7 @@ class MainActivity : Activity() {
             val page = store.catalogPage(search, filter, catalogResearchFilter.ifBlank { null }, pageSize + 1)
             matches = page.take(pageSize)
             adapter.notifyDataSetChanged()
-            count.text = "Показано · ${matches.size}"
+            count.text = if (page.size > pageSize) "Показаны первые ${matches.size}" else "Найдено · ${matches.size}"
             more.visibility = if (page.size > pageSize) View.VISIBLE else View.GONE
             emptyState.removeAllViews()
             if (matches.isEmpty()) empty(emptyState, "Объекты не найдены",
@@ -1453,7 +1552,7 @@ class MainActivity : Activity() {
             for (page in DiaryPage.entries) {
                 val count = if (page == DiaryPage.DRAFTS) store.draftCount() else 0
                 val title = if (count > 0) "${page.title} · $count" else page.title
-                addView(navigationAction(title, page.icon, page == diaryPage) {
+                addView(diaryPageAction(title, page == diaryPage) {
                     diaryPage = page
                     diaryTripId = null
                     filterTripNotes = null
@@ -1473,6 +1572,8 @@ class MainActivity : Activity() {
         }
         val filter = filterTripNotes?.let(store.trips::get)
         val trip = filter ?: store.trips.active()
+        if (trip != null) loading.addView(label("Выезд · ${trip.title}", 14f, Palette.heading, true)
+            .apply { setPadding(dp(2), 0, dp(2), dp(5)) }, -1, -2)
         loading.addView(addAction("Новая запись", FieldIcon.NOTE) { createNote(null, tripId = trip?.id) }, -1, -2)
         loading.addSpace(8)
         if (filter != null) {
@@ -1483,7 +1584,7 @@ class MainActivity : Activity() {
             loading.addSpace(8)
         } else {
             store.trips.active()?.let { trip ->
-                card(loading, trip.title, "Текущий выезд · новые записи относятся к нему") { showTripDetails(trip.id) }
+                card(loading, trip.title, "Текущий выезд") { showTripDetails(trip.id) }
             }
         }
         val query = edit("Поиск в записях", diarySearch)
@@ -1573,7 +1674,13 @@ class MainActivity : Activity() {
         if (trackTripId != id) return
         hiddenTripId = id
         selectTripTrack(null)
-        refreshDiary()
+        if (tab == Tab.NOTES) refreshDiary()
+        message("Маршрут скрыт") {
+            if (hiddenTripId == id && store.trips.get(id) != null) {
+                selectTripTrack(id)
+                if (tab == Tab.NOTES) refreshDiary()
+            }
+        }
     }
 
     internal fun deleteTrip(id: String) {
@@ -1767,15 +1874,8 @@ class MainActivity : Activity() {
         }
         row(maps, "Свой онлайн-источник XYZ",
             if (tiles.customUrl.isBlank()) "Карта по умолчанию · OpenStreetMap" else tiles.customCredit) { customSource() }
-        val exchange = section("Обмен и резервные копии")
-        row(exchange, "Импорт ZIP или GeoJSON", "Перенос базы и проверка состава GeoJSON") { pickDocument(IMPORT, "*/*") }
-        row(exchange, "Импорт регионального CSV", "Карточки с координатами и без них") { pickDocument(CATALOG_CSV, "*/*") }
-        row(exchange, "Разобрать таблицы из дневника", "Создать карточки из вложений археологического каталога") {
-            fieldPrompt("Создать карточки из таблиц?", PromptAction("Импортировать") {
-                withIo("Чтение региональных таблиц", { store.expandAttachedCatalog() }) { showImportResult(it) }
-            }, detail = "Будут добавлены отсутствующие ID. Региональные CSV сохранятся в записях.")
-        }
-        row(exchange, "Полная полевая копия", "ZIP · черновики, журнал, редакции и вложения") {
+        val backup = section("Резервные копии")
+        row(backup, "Сохранить полную копию", "ZIP · черновики, журнал, редакции и вложения") {
             withIo("Проверка состава копии", { store.backupInfo() }) { info ->
                 val bytes = android.text.format.Formatter.formatShortFileSize(this, info.bytes)
                 val free = android.text.format.Formatter.formatShortFileSize(this, info.free)
@@ -1785,7 +1885,7 @@ class MainActivity : Activity() {
                     "Вложения · ${info.files} ($bytes)\nСвободно на устройстве · $free")
             }
         }
-        row(exchange, "Экспорт копии по частям", "Полная копия в отдельной папке · части до 512 МиБ") {
+        row(backup, "Сохранить копию по частям", "Полная копия в отдельной папке · части до 512 МиБ") {
             withIo("Проверка состава копии", { store.backupInfo() }) { info ->
                 val size = android.text.format.Formatter.formatShortFileSize(this, info.bytes)
                 val free = android.text.format.Formatter.formatShortFileSize(this, info.free)
@@ -1794,12 +1894,26 @@ class MainActivity : Activity() {
                 }, detail = "Вложения · $size · свободно · $free. Для временной сборки нужна свободная память на телефоне.")
             }
         }
-        row(exchange, "Восстановить копию из частей", "Выберите папку с индексом и всеми частями") {
+        val transfer = section("Перенос и импорт")
+        row(transfer, "Открыть ZIP или GeoJSON", "Восстановление копии или импорт объектов") { pickDocument(IMPORT, "*/*") }
+        row(transfer, "Импорт регионального CSV", "Карточки с координатами и без них") { pickDocument(CATALOG_CSV, "*/*") }
+        row(transfer, "Разобрать таблицы из дневника", "Создать карточки из вложений археологического каталога") {
+            fieldPrompt("Создать карточки из таблиц?", PromptAction("Импортировать") {
+                withIo("Чтение региональных таблиц", { store.expandAttachedCatalog() }) { showImportResult(it) }
+            }, detail = "Будут добавлены отсутствующие ID. Региональные CSV сохранятся в записях.")
+        }
+        row(transfer, "Восстановить копию из частей", "Выберите папку с индексом и всеми частями") {
             startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), BACKUP_PARTS_READ)
         }
-        row(exchange, "Сравнить импортированные правки", "Посмотреть поля и выбрать редакцию") { showImportConflicts() }
-        row(exchange, "Источники проекта", "Архивы, публикации, карты и интернет-ресурсы") { chooseSource() }
-        row(exchange, "Описание проекта", "Исполнители, методы, словарь полей и версия") {
+        row(transfer, "Сравнить импортированные правки", "Посмотреть поля и выбрать редакцию") { showImportConflicts() }
+        val gis = section("QGIS и другие ГИС")
+        row(gis, "Экспорт объектов GeoJSON", "WGS 84 · точки, контуры и поля карточек") { exportDocument(GEOJSON, "application/geo+json", "field-journal-${shortDate()}.geojson") }
+        row(gis, "Экспорт выезда", "Маршрут GPX или комплект для QGIS с объектами и записями") { chooseTripExport() }
+        val publication = section("Публикация")
+        row(publication, "Публичная выгрузка", "Упрощённые координаты и выбранные копии фотографий") { choosePublicExport() }
+        val project = section("Проект")
+        row(project, "Источники проекта", "Архивы, публикации, карты и интернет-ресурсы") { chooseSource() }
+        row(project, "Описание проекта", "Исполнители, методы, словарь полей и версия") {
             val current = store.setting("project") ?: org.json.JSONObject()
             editStructuredFields("Описание проекта", linkedMapOf("title" to "Название", "authors" to "Исполнители",
                 "methods" to "Методы", "schema" to "Словарь полей", "version" to "Версия данных"),
@@ -1807,9 +1921,6 @@ class MainActivity : Activity() {
                 store.saveSetting("project", org.json.JSONObject(it))
             }
         }
-        row(exchange, "Публичная выгрузка", "Упрощённые координаты и выбранные копии фотографий") { choosePublicExport() }
-        row(exchange, "Экспорт объектов GeoJSON", "WGS 84 · точки, контуры и поля карточек") { exportDocument(GEOJSON, "application/geo+json", "field-journal-${shortDate()}.geojson") }
-        row(exchange, "Экспорт выезда", "Маршрут GPX или комплект для QGIS с объектами и записями") { chooseTripExport() }
         list.addSpace(10)
         list.addView(label("Подтверждённые изменения хранятся в локальной базе. Файлы карт хранятся отдельно от резервных копий.", 13f, Palette.muted))
     }
@@ -2015,19 +2126,19 @@ class MainActivity : Activity() {
         fieldPrompt(
             title = question,
             detail = listOfNotNull(editor.adoptionNotice(), saveContext).joinToString("\n").ifBlank { null },
-            primary = PromptAction("Сохранить") {
+            primary = PromptAction(if (editorIsNote) "Сохранить запись" else "Сохранить объект") {
                 if (editor.saveConfirmed()) {
                     after()
                     message(saveContext?.let { "Сохранено · $it" } ?: "Сохранено")
                 }
             },
-            secondary = PromptAction("Не сохранять") {
+            secondary = PromptAction("Отбросить изменения") {
                 if (editor.discardDraft()) after()
             },
             destructive = true,
-            choices = listOf(PromptAction("В черновики") {
+            alternative = PromptAction("Оставить в черновиках") {
                 if (persistEditorDraft()) after()
-            })
+            }
         )
     }
 
@@ -2319,12 +2430,24 @@ class MainActivity : Activity() {
             .setNegativeButton("Подтвердить") { _, _ -> yes() }.show()
     }
 
-    internal fun message(text: String) {
+    internal fun message(text: String, undo: (() -> Unit)? = null) {
         handler.removeCallbacks(hideNotice)
-        notice.text = text
+        noticeText.text = text
+        noticeAction.visibility = if (undo == null) View.GONE else View.VISIBLE
+        noticeAction.setOnClickListener {
+            dismissNotice()
+            undo?.invoke()
+        }
         notice.visibility = View.VISIBLE
         positionNotice()
-        handler.postDelayed(hideNotice, 3000)
+        val duration = if (undo == null) 3000 else 6000
+        val accessibility = getSystemService(android.view.accessibility.AccessibilityManager::class.java)
+        val timeout = if (android.os.Build.VERSION.SDK_INT >= 29 && undo != null) {
+            accessibility.getRecommendedTimeoutMillis(duration,
+                android.view.accessibility.AccessibilityManager.FLAG_CONTENT_TEXT or
+                    android.view.accessibility.AccessibilityManager.FLAG_CONTENT_CONTROLS)
+        } else duration
+        handler.postDelayed(hideNotice, timeout.toLong())
     }
 
     private fun positionNotice() {

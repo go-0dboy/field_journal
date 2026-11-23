@@ -95,6 +95,10 @@ internal class JournalEditor(
     private val removedAttachments = draft.removed.toMutableSet()
     private val stagedAttachments = draft.staged.toMutableSet()
     private val uncertain = site?.uncertainFields.orEmpty().toMutableSet()
+    private var parentLink: TextView? = null
+    private var verificationSummary: TextView? = null
+    private val verificationLabels = mapOf("period" to "датировка", "culture" to "атрибуция",
+        "condition" to "состояние", "context" to "контекст")
 
     init {
         body.setPadding(activity.dp(16), activity.dp(10), activity.dp(16), activity.dp(20))
@@ -159,13 +163,14 @@ internal class JournalEditor(
             parent.addView(activity.horizontal().apply {
                 addView(titled, LinearLayout.LayoutParams(0, -2, 1f))
                 addView(CheckBox(activity).apply {
-                    text = "Проверить"
+                    text = "Требует проверки"
                     textSize = 12f
                     contentDescription = "$label · требует проверки"
                     minimumHeight = activity.dp(48)
                     isChecked = key in uncertain
                     setOnCheckedChangeListener { _, checked ->
                         if (checked) uncertain.add(key) else uncertain.remove(key)
+                        refreshVerificationSummary()
                         changed()
                     }
                 }, -2, -2)
@@ -201,7 +206,28 @@ internal class JournalEditor(
         input.watch { changed() }
     }
 
+    private fun refreshVerificationSummary() {
+        verificationSummary?.apply {
+            visibility = if (uncertain.isEmpty()) View.GONE else View.VISIBLE
+            text = uncertain.mapNotNull(verificationLabels::get).joinToString(", ", "Требуют проверки: ")
+        }
+    }
+
+    private fun refreshParentLink() {
+        val group = parentId?.let(activity.store::site)
+        parentLink?.apply {
+            visibility = if (group == null) View.GONE else View.VISIBLE
+            text = group?.let { if (isNew) "После сохранения в составе «${it.title}»" else "В составе «${it.title}»" }
+        }
+    }
+
     private fun buildSite(value: Site) {
+        section("Описание")
+        field("title", "Название", value.title)
+        parentLink = activity.secondaryAction("", FieldIcon.PARENT_AREA) {
+            parentId?.let(activity::openGroupSite)
+        }.also { body.addView(it, -1, -2) }
+        refreshParentLink()
         val info = activity.vertical().apply {
             background = activity.panel(Palette.pale, 15)
             setPadding(activity.dp(12), activity.dp(11), activity.dp(12), activity.dp(12))
@@ -212,7 +238,7 @@ internal class JournalEditor(
             val base = objectType(type.orEmpty())
             val selected = customColor?.let { base.copy(color = it) } ?: base
             typeRow.addView(SymbolView(activity, selected), activity.dp(40), activity.dp(40))
-            typeRow.addView(activity.action(selected.title) {
+            typeRow.addView(activity.secondaryAction(selected.title) {
                 activity.chooseType("Условный знак объекта") { picked ->
                     type = picked.id
                     typeControl()
@@ -221,8 +247,7 @@ internal class JournalEditor(
             }, LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = activity.dp(8) })
         }
         typeControl()
-        info.addView(typeRow, -1, -2)
-        info.addSpace(8)
+        body.addView(typeRow, -1, -2)
         val details = buildList {
             add(if (value.located) value.anchor.display() + "  WGS 84" else "Местоположение не установлено")
             value.coordinateOrigin?.let { add(it.title) }
@@ -236,11 +261,26 @@ internal class JournalEditor(
                 add("Высота $it м · " + if (value.coordinateOrigin == CoordinateOrigin.DEVICE) "эллипсоид WGS 84" else "по источнику")
             }
         }
+        val summary = buildList {
+            add(details.first())
+            value.accuracy?.let { add("±${it.toInt()} м") }
+        }.joinToString(" · ")
+        body.addView(activity.label(summary, 13f, Palette.muted).apply { setTextIsSelectable(true) }, -1, -2)
+        body.addView(activity.secondaryAction(
+            if (value.located) "Положение на карте" else "Установить на карте", FieldIcon.MAP
+        ) {
+            if (value.located) {
+                info.visibility = if (info.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+            } else {
+                activity.editGeometry(value)
+            }
+        }, -1, -2)
+        info.visibility = View.GONE
         info.addView(activity.label(details.joinToString("\n"), 13f, Palette.heading).apply { setTextIsSelectable(true) })
         info.addSpace(8)
         val actions = activity.horizontal()
         if (value.located) chip(actions, "На карте") { activity.showOnMap(value) }
-        chip(actions, if (value.located) "Изменить" else "Установить на карте") {
+        if (value.located) chip(actions, "Изменить") {
             if (value.holes.isEmpty()) activity.editGeometry(value)
             else activity.confirm("Перерисовать границу?", "Внутренние контуры импортированного полигона будут заменены новой границей.") {
                 activity.editGeometry(value)
@@ -248,7 +288,7 @@ internal class JournalEditor(
         }
         info.addView(actions, -1, -2)
         info.addSpace(5)
-        info.addView(activity.action("Цвет на карте") {
+        info.addView(activity.secondaryAction("Цвет на карте") {
             val colors = listOf("Цвет знака" to null, "Синий" to 0xff356295.toInt(),
                 "Бирюзовый" to 0xff23746f.toInt(), "Зелёный" to 0xff48764b.toInt(),
                 "Кирпичный" to 0xffa4512f.toInt(), "Фиолетовый" to 0xff765287.toInt(),
@@ -267,14 +307,14 @@ internal class JournalEditor(
             }
         }, -1, -2)
         body.addView(info, -1, -2)
-        section("Описание")
-        field("title", "Название", value.title)
         field("description", "Описание местности и объекта", value.description, 3, withLinks = true)
-        body.addView(activity.action("Заполнить по открытым источникам") { findPlace() }, -1, -2)
+        body.addView(activity.secondaryAction("Заполнить по открытым источникам", FieldIcon.LINK) { findPlace() }, -1, -2)
+        addMedia()
         addLinks()
         addGroup(value)
-        addMedia()
         section("Датировка и состояние")
+        verificationSummary = activity.label("", 13f, Palette.rust).also { body.addView(it, -1, -2) }
+        refreshVerificationSummary()
         field("period", "Датировка / период", value.period)
         field("culture", "Культура / атрибуция", value.culture)
         field("condition", "Состояние и угрозы сохранности", value.condition, 2)
@@ -296,19 +336,9 @@ internal class JournalEditor(
         if (isNew && initialParent == null && children.isEmpty()) return
 
         section("Связанные объекты")
-        val parent = activity.label("", 14f, Palette.muted)
-        fun updateParent() {
-            val group = parentId?.let(activity.store::site)
-            parent.visibility = if (group == null) View.GONE else View.VISIBLE
-            parent.text = group?.let {
-                if (isNew) "После сохранения в составе «${it.title}»" else "В составе «${it.title}»"
-            }.orEmpty()
-        }
-        updateParent()
-        body.addView(parent, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = activity.dp(8) })
         if (!isNew) {
             addToolRow(buildList {
-                add(activity.iconAction(FieldIcon.PARENT_AREA) { chooseParent(value, ::updateParent) })
+                add(activity.iconAction(FieldIcon.PARENT_AREA) { chooseParent(value, ::refreshParentLink) })
                 if (value.area) {
                     add(activity.iconAction(FieldIcon.POINT, "Добавить точку внутри") {
                         activity.createInside(value, area = false)
@@ -331,7 +361,7 @@ internal class JournalEditor(
 
     private fun chooseParent(value: Site, updateParent: () -> Unit) {
         val candidates = activity.store.groupCandidates(value)
-        activity.fieldworkSheet("Родительская область") { sheet ->
+        activity.fieldworkSheet("Выбрать родительскую область") { sheet ->
             parentId?.let(activity.store::site)?.let { group ->
                 addView(activity.action("Открыть «${group.title}»") {
                     sheet.dismiss()
@@ -538,8 +568,8 @@ internal class JournalEditor(
         } else {
             field("body", "Маршрут, работы и наблюдения", value.body, 7, withLinks = true)
         }
-        addLinks()
         addMedia()
+        addLinks()
         section("Учёт и источники")
         val accounting = if (draft.compact) {
             val details = activity.vertical().apply { visibility = View.GONE }
@@ -613,6 +643,7 @@ internal class JournalEditor(
             activity.editResearch(title, research, site?.located, attachments, linkedTrip?.let(activity.store.trips::get)?.profile) { value ->
                 research = value
                 changed()
+                activity.persistEditorDraft()
             }
         }, -1, -2)
     }
@@ -641,7 +672,7 @@ internal class JournalEditor(
         section("Ссылки")
         linkList = activity.vertical()
         body.addView(linkList, -1, -2)
-        body.addView(activity.addAction("Добавить ссылку", FieldIcon.LINK, primary = false) { promptLink() }, -1, -2)
+        body.addView(activity.secondaryAction("Добавить ссылку", FieldIcon.LINK) { promptLink() }, -1, -2)
         showLinks()
     }
 

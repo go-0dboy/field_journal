@@ -97,7 +97,6 @@ internal class JournalEditor(
     private val uncertain = site?.uncertainFields.orEmpty().toMutableSet()
     private var parentLink: TextView? = null
     private var verificationNotice: TextView? = null
-    private var noteContext: TextView? = null
 
     init {
         body.setPadding(activity.dp(16), activity.dp(10), activity.dp(16), activity.dp(20))
@@ -136,13 +135,12 @@ internal class JournalEditor(
     }
 
     private fun section(title: String) {
-        if (body.childCount > 0) {
-            body.addSpace(14)
-            body.addView(View(activity).apply { setBackgroundColor(Palette.border) }, -1, activity.dp(1))
-            body.addSpace(15)
+        body.addSpace(15)
+        val heading = activity.label(title, 19f, Palette.heading, true).apply {
+            if (android.os.Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true
         }
-        body.addView(activity.fieldHeading(title))
-        body.addSpace(10)
+        body.addView(heading)
+        body.addSpace(7)
     }
 
     fun scrollPosition() = scroll.scrollY
@@ -156,12 +154,7 @@ internal class JournalEditor(
         withLinks: Boolean = false
     ) {
         val titled = activity.label(label, 13f, Palette.muted, true)
-        val input = activity.edit(label, value, lines).apply {
-            if (key == "title") {
-                textSize = 19f
-                typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
-            }
-        }
+        val input = activity.edit(label, value, lines)
         input.id = View.generateViewId()
         titled.labelFor = input.id
         if (site != null && key in verifiableSiteFields) {
@@ -214,7 +207,6 @@ internal class JournalEditor(
         refreshParentLink()
         val info = activity.vertical().apply {
             background = activity.panel(Palette.pale, 15)
-            visibility = View.GONE
             setPadding(activity.dp(12), activity.dp(11), activity.dp(12), activity.dp(12))
         }
         val typeRow = activity.horizontal()
@@ -250,14 +242,11 @@ internal class JournalEditor(
             add(details.first())
             value.accuracy?.let { add("±${it.toInt()} м") }
         }.joinToString(" · ")
-        body.addSpace(8)
-        body.addView(activity.label(summary, 13f, Palette.muted).apply {
-            setTextIsSelectable(true)
-            setPadding(activity.dp(10), activity.dp(8), activity.dp(10), activity.dp(8))
-            background = activity.panel(Palette.pale, 10)
-        }, -1, -2)
+        body.addView(activity.label(summary, 13f, Palette.muted).apply { setTextIsSelectable(true) }, -1, -2)
         val placement = if (value.located) {
-            activity.disclosure("Положение на карте", info)
+            activity.choiceAction("Положение на карте") {
+                info.visibility = if (info.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+            }
         } else {
             activity.choiceAction("Установить на карте") {
                 val shapes = listOf("Точка", "Область")
@@ -268,6 +257,7 @@ internal class JournalEditor(
         }
         body.addSpace(8)
         body.addView(placement, -1, -2)
+        info.visibility = View.GONE
         info.addView(activity.label(details.joinToString("\n"), 13f, Palette.heading).apply { setTextIsSelectable(true) })
         info.addSpace(8)
         val actions = activity.horizontal()
@@ -513,7 +503,6 @@ internal class JournalEditor(
             if (linkedTrip != null) addView(activity.action("Без выезда") {
                 linkedTrip = null
                 button.text = tripLabel()
-                updateNoteContext()
                 changed()
                 sheet.dismiss()
             }, -1, -2)
@@ -521,57 +510,54 @@ internal class JournalEditor(
             for (trip in trips) activity.card(this, trip.title, dateLabel(trip.startedAt)) {
                 linkedTrip = trip.id
                 button.text = tripLabel()
-                updateNoteContext()
                 changed()
                 sheet.dismiss()
             }
         }
     }
 
-    private fun noteMetadata(parent: LinearLayout) {
+    private fun noteMetadata(created: Long, parent: LinearLayout) {
         parent.addView(activity.vertical().apply {
-            background = activity.panel(Palette.white, 14, Palette.border)
-            setPadding(activity.dp(10), activity.dp(10), activity.dp(10), activity.dp(10))
-            addView(activity.label("Дата и время", 13f, Palette.muted, true), -1, -2)
-            addSpace(4)
-            addView(activity.choiceAction(dateLabel(requireNotNull(timestamp)), ::pickDate), -1, -2)
-            addSpace(10)
-            addView(activity.choiceAction(linkTitle(), ::chooseSite), -1, -2)
+            background = activity.panel(Palette.pale, 15)
+            setPadding(activity.dp(12), activity.dp(12), activity.dp(12), activity.dp(12))
+            addView(activity.choiceAction(dateLabel(created), ::pickDate), -1, -2)
             addSpace(8)
-            addView(activity.choiceAction(tripLabel(), ::chooseTrip), -1, -2)
+            addView(activity.choiceAction(linkTitle(), ::chooseSite), -1, -2)
         }, -1, -2)
-        parent.addSpace(12)
-    }
-
-    private fun updateNoteContext() {
-        noteContext?.text = listOfNotNull(saveContext(), timestamp?.let(::dateLabel)).joinToString(" · ")
+        parent.addSpace(8)
     }
 
     private fun buildNote(value: Note) {
+        body.addView(activity.choiceAction(tripLabel(), ::chooseTrip), -1, -2)
+        body.addSpace(6)
+        if (draft.compact) {
+            val context = listOfNotNull(value.siteId?.let(activity.store::site)?.title,
+                value.tripId?.let(activity.store.trips::get)?.title, dateLabel(value.created)).joinToString(" · ")
+            body.addView(activity.label(context, 14f, Palette.heading, true))
+        } else {
+            noteMetadata(value.created, body)
+        }
+
         section("Описание")
-        noteContext = activity.label("", 13f, Palette.muted).apply {
-            setPadding(activity.dp(10), activity.dp(8), activity.dp(10), activity.dp(8))
-            background = activity.panel(Palette.pale, 10)
-        }.also { body.addView(it, -1, -2) }
-        body.addSpace(12)
-        updateNoteContext()
         field("title", "Заголовок", value.title)
         if (draft.compact) {
             field("body", "Короткая заметка", value.body, 3, withLinks = true)
         } else {
-            field("body", "Маршрут, работы и наблюдения", value.body, 4, withLinks = true)
+            field("body", "Маршрут, работы и наблюдения", value.body, 7, withLinks = true)
         }
         addMedia()
         addLinks()
         section("Учёт и источники")
         val accounting = if (draft.compact) {
             val details = activity.vertical().apply { visibility = View.GONE }
-            body.addView(activity.disclosure("Дополнительные поля", details), -1, -2)
-            details.setPadding(0, activity.dp(10), 0, 0)
+            body.addView(activity.action("Дополнительные поля") {
+                details.visibility = if (details.visibility == View.GONE) View.VISIBLE else View.GONE
+            }, -1, -2)
+            body.addSpace(8)
+            noteMetadata(value.created, details)
             body.addView(details, -1, -2)
             details
         } else body
-        noteMetadata(accounting)
         field("author", "Автор / группа", value.author, parent = accounting)
         field("weather", "Погода и условия работ", value.weather, parent = accounting)
     }
@@ -594,7 +580,6 @@ internal class JournalEditor(
                         timestamp = java.time.LocalDateTime.of(year, month + 1, day, time.hour, time.minute)
                             .atZone(zone).toInstant().toEpochMilli()
                         button.text = dateLabel(requireNotNull(timestamp))
-                        updateNoteContext()
                         changed()
                         dialog.dismiss()
                     }
@@ -624,7 +609,6 @@ internal class JournalEditor(
         activity.chooseResearchSite("Объект дневника", allowNone = true) { id ->
             linkedSite = id
             button.text = linkTitle()
-            updateNoteContext()
             changed()
         }
     }

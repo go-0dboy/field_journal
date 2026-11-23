@@ -12,21 +12,21 @@ import android.widget.LinearLayout
 import android.widget.TextView
 
 internal object Palette {
-    val paper = 0xfff5f5ee.toInt()
+    val paper = 0xfff5f6f9.toInt()
     val white = 0xffffffff.toInt()
-    val heading = 0xff162b24.toInt()
-    val accent = 0xff225646.toInt()
-    val pale = 0xffdaeadf.toInt()
-    val control = 0xffedf2eb.toInt()
-    val ink = 0xff202e28.toInt()
-    val muted = 0xff475c52.toInt()
-    val border = 0xffced9cd.toInt()
-    val controlBorder = 0xff718778.toInt()
-    val floatingSurface = 0xfafffffc.toInt()
-    val floatingAccent = accent
-    val notice = 0xff173a30.toInt()
-    val rust = 0xff8c3629.toInt()
-    val ripple = ColorStateList.valueOf(0x25225646)
+    val heading = 0xff172741.toInt()
+    val accent = 0xff245bbd.toInt()
+    val pale = 0xffe9f0fe.toInt()
+    val control = 0xffedf0f5.toInt()
+    val ink = 0xff182233.toInt()
+    val muted = 0xff536074.toInt()
+    val border = 0xffdce3ee.toInt()
+    val controlBorder = 0xff9eafc7.toInt()
+    val floatingSurface = 0xf2ffffff.toInt()
+    val floatingAccent = 0xf5245bbd.toInt()
+    val notice = 0xee182941.toInt()
+    val rust = 0xff963c31.toInt()
+    val ripple = ColorStateList.valueOf(0x25245bbd)
 }
 
 internal fun Context.dp(value: Number) = (value.toFloat() * resources.displayMetrics.density + 0.5f).toInt()
@@ -46,28 +46,6 @@ internal fun Context.label(text: CharSequence, size: Float = 15f, color: Int = P
         setTextColor(color)
         typeface = if (bold) Typeface.create("sans-serif-medium", Typeface.NORMAL) else Typeface.DEFAULT
     }
-
-internal fun Context.fieldHeading(text: String, size: Float = 20f) =
-    label(text, size, Palette.heading, true).apply {
-        if (android.os.Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true
-    }
-
-internal fun Context.fieldSearch(hint: String, value: String) = edit(hint, value).apply {
-    setCompoundDrawablesRelativeWithIntrinsicBounds(fieldGlyph(FieldIcon.SEARCH, 19, Palette.muted), null, null, null)
-    compoundDrawablePadding = dp(9)
-    imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH
-    setOnEditorActionListener { _, action, _ ->
-        if (action != android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH) return@setOnEditorActionListener false
-        getSystemService(android.view.inputmethod.InputMethodManager::class.java)?.hideSoftInputFromWindow(windowToken, 0)
-        clearFocus()
-        true
-    }
-}
-
-internal fun Context.segmentedBar() = horizontal().apply {
-    background = panel(Palette.control, 16, Palette.border)
-    setPadding(dp(4), dp(4), dp(4), dp(4))
-}
 
 internal fun Context.action(
     caption: String, primary: Boolean = false, description: String? = null, click: () -> Unit
@@ -251,19 +229,6 @@ internal fun Context.choiceAction(caption: String, pick: (TextView) -> Unit) =
         setOnClickListener { pick(this) }
     }
 
-internal fun Context.disclosure(caption: String, target: View): TextView {
-    fun update(button: TextView) {
-        val expanded = target.visibility == View.VISIBLE
-        val icon = if (expanded) FieldIcon.CHEVRON_UP else FieldIcon.CHEVRON_DOWN
-        button.setCompoundDrawablesRelativeWithIntrinsicBounds(null, null, fieldGlyph(icon, 18, Palette.heading), null)
-        if (android.os.Build.VERSION.SDK_INT >= 30) button.stateDescription = if (expanded) "Развёрнуто" else "Свёрнуто"
-    }
-    return choiceAction(caption) { button ->
-        target.visibility = if (target.visibility == View.VISIBLE) View.GONE else View.VISIBLE
-        update(button)
-    }.also(::update)
-}
-
 internal fun Context.chooseOption(title: String, options: List<String>, selected: String, pick: (String) -> Unit) {
     android.app.AlertDialog.Builder(this).setTitle(title)
         .setSingleChoiceItems(options.toTypedArray(), options.indexOf(selected)) { dialog, index ->
@@ -272,14 +237,13 @@ internal fun Context.chooseOption(title: String, options: List<String>, selected
         }.setPositiveButton("Отмена", null).show()
 }
 
-internal fun Context.segmentAction(title: String, selected: Boolean, click: () -> Unit) =
+internal fun Context.diaryPageAction(title: String, selected: Boolean, click: () -> Unit) =
     action(title, click = click).apply {
         isSelected = selected
         setPadding(dp(4), dp(3), dp(4), dp(3))
         setTextColor(if (selected) Palette.accent else Palette.heading)
         background = RippleDrawable(Palette.ripple,
-            panel(if (selected) Palette.pale else Color.TRANSPARENT, 12,
-                if (selected) Palette.controlBorder else 0), panel(Color.WHITE, 12))
+            panel(if (selected) Palette.white else Color.TRANSPARENT, 13), panel(Color.WHITE, 13))
     }
 
 internal fun Context.navigationAction(title: String, icon: FieldIcon, selected: Boolean, click: () -> Unit) =
@@ -291,7 +255,7 @@ internal fun Context.navigationAction(title: String, icon: FieldIcon, selected: 
         val ink = if (selected) Palette.accent else Palette.muted
         setTextColor(ink)
         background = RippleDrawable(Palette.ripple,
-            panel(if (selected) Palette.pale else Color.TRANSPARENT, 16), panel(Color.WHITE, 16))
+            panel(if (selected) Palette.pale else Color.TRANSPARENT, 14), panel(Color.WHITE, 14))
         val glyph = FieldIconDrawable(dp(22), icon, ink, adding = false)
         glyph.setBounds(0, 0, dp(22), dp(22))
         compoundDrawablePadding = dp(3)
@@ -303,7 +267,7 @@ internal class CatalogRow(context: Context) : LinearLayout(context) {
     private var type = objectType("")
     private val symbol = object : View(context) {
         override fun onDraw(canvas: Canvas) {
-            drawSymbol(canvas, width / 2f, height / 2f, minOf(width, height) * 0.34f, type)
+            drawSymbol(canvas, width / 2f, height / 2f, minOf(width, height) * 0.45f, type)
         }
     }
     private val title = context.label("", 17f, Palette.ink, true)
@@ -312,11 +276,10 @@ internal class CatalogRow(context: Context) : LinearLayout(context) {
         orientation = VERTICAL
         setPadding(0, 0, 0, context.dp(7))
         addView(context.horizontal().apply {
-            background = context.panel(Palette.white, 13, Palette.border)
+            background = context.panel(Palette.white, 18, Palette.border)
             minimumHeight = context.dp(68)
             setPadding(context.dp(12), context.dp(10), context.dp(12), context.dp(10))
-            symbol.background = context.panel(Palette.pale, 11)
-            addView(symbol, context.dp(42), context.dp(42))
+            addView(symbol, context.dp(39), context.dp(39))
             addView(context.vertical().apply {
                 setPadding(context.dp(10), 0, context.dp(8), 0)
                 addView(title)
@@ -339,7 +302,6 @@ internal class CatalogRow(context: Context) : LinearLayout(context) {
 
 internal enum class FieldIcon(val description: String, val addsItem: Boolean = false) {
     MAP("Карта"),
-    SEARCH("Поиск"),
     POINT("Добавить точку", true),
     AREA("Добавить область", true),
     COORDINATES("Координаты"),
@@ -348,7 +310,6 @@ internal enum class FieldIcon(val description: String, val addsItem: Boolean = f
     LAYERS("Слои"),
     VISIBLE_OBJECTS("Объекты в видимой области"),
     CHEVRON_DOWN("Выбор из списка"),
-    CHEVRON_UP("Свернуть"),
     FILTER_TYPES("Фильтр по типу"),
     FILTER_LOCATION("Фильтр по привязке"),
     SET_POINT("Установить точку"),
@@ -411,15 +372,6 @@ internal fun Context.addAction(caption: String, icon: FieldIcon, primary: Boolea
         glyph.setBounds(0, 0, size, size)
         compoundDrawablePadding = dp(9)
         setCompoundDrawablesRelative(glyph, null, null, null)
-    }
-
-internal fun Context.captureAction(title: String, icon: FieldIcon, primary: Boolean, click: () -> Unit) =
-    action(title, primary, description = icon.description, click = click).apply {
-        setPadding(dp(4), dp(7), dp(4), dp(7))
-        setCompoundDrawablesRelativeWithIntrinsicBounds(
-            null, fieldGlyph(icon, 21, if (primary) Color.WHITE else Palette.heading), null, null)
-        compoundDrawablePadding = dp(3)
-        textSize = 13f
     }
 
 internal fun Context.fieldGlyph(icon: FieldIcon, size: Int, color: Int, outline: Boolean = false) =
@@ -528,16 +480,10 @@ internal class FieldIconDrawable(
                 lineTo(8f, 12f)
                 lineTo(15f, 19f)
             }
-            FieldIcon.SEARCH -> {
-                circle(10f, 10f, 6f)
-                line(14.5f, 14.5f, 21f, 21f)
-            }
-            FieldIcon.CHEVRON_DOWN, FieldIcon.CHEVRON_UP -> path {
-                val expanded = icon == FieldIcon.CHEVRON_UP
-                val sides = if (expanded) 16f else 9f
-                moveTo(5f, sides)
-                lineTo(12f, if (expanded) 9f else 16f)
-                lineTo(19f, sides)
+            FieldIcon.CHEVRON_DOWN -> path {
+                moveTo(5f, 9f)
+                lineTo(12f, 16f)
+                lineTo(19f, 9f)
             }
             FieldIcon.FILTER_TYPES -> {
                 line(4f, 5f, 20f, 5f)
@@ -724,7 +670,6 @@ internal fun Context.editorAction(done: Boolean, click: () -> Unit) =
 internal class DiaryRow(context: Context) : LinearLayout(context) {
     private val title = context.label("", 16f, Palette.ink, true)
     private val detail = context.label("", 13f, Palette.muted)
-    private val date = context.label("", 12f, Palette.accent, true)
 
     init {
         gravity = Gravity.CENTER_VERTICAL
@@ -732,8 +677,6 @@ internal class DiaryRow(context: Context) : LinearLayout(context) {
         setPadding(context.dp(12), context.dp(11), context.dp(12), context.dp(11))
         minimumHeight = context.dp(64)
         addView(context.vertical().apply {
-            addView(date)
-            addSpace(3)
             addView(title)
             addView(detail)
         }, LayoutParams(0, -2, 1f))
@@ -744,9 +687,6 @@ internal class DiaryRow(context: Context) : LinearLayout(context) {
 
     fun bind(note: NoteSummary) {
         title.text = note.title
-        date.text = dateLabel(note.created)
-        val context = listOfNotNull(note.siteTitle, note.tripTitle).filter(String::isNotBlank).joinToString(" · ")
-        detail.text = context
-        detail.visibility = if (context.isEmpty()) GONE else VISIBLE
+        detail.text = listOfNotNull(dateLabel(note.created), note.siteTitle, note.tripTitle).joinToString(" · ")
     }
 }

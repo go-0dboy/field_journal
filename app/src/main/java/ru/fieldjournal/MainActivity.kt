@@ -571,15 +571,12 @@ class MainActivity : Activity() {
                 addSpace(4)
                 addView(name, -1, -2)
                 addSpace(14)
-                val profile = choiceAction(draft.profile) { button ->
+                val profile = valueRow("Тип выезда", draft.profile) { button ->
                     chooseOption("Тип выезда", tripProfiles, draft.profile) {
                         draft.profile = it
                         button.text = it
                     }
                 }
-                profile.id = View.generateViewId()
-                addView(label("Тип выезда", 13f, Palette.muted, true).apply { labelFor = profile.id })
-                addSpace(4)
                 addView(profile, -1, -2)
             })
         }, -1, -1)
@@ -1517,7 +1514,7 @@ class MainActivity : Activity() {
 
     private fun showSites() {
         val panel = vertical().apply { setPadding(dp(14), dp(5), dp(14), dp(8)) }
-        val query = edit("Поиск объектов", search).apply {
+        val query = searchField("Поиск объектов", search).apply {
             contentDescription = "Поиск по названию, номеру, месту или источнику"
         }
         val controls = horizontal()
@@ -1619,8 +1616,8 @@ class MainActivity : Activity() {
     private fun showNotes() {
         val loading = vertical().apply { setPadding(dp(14), dp(5), dp(14), dp(8)) }
         loading.addView(horizontal().apply {
-            background = panel(Palette.control, 18)
-            setPadding(dp(4), dp(4), dp(4), dp(4))
+            dividerDrawable = panel(android.graphics.Color.TRANSPARENT).apply { setSize(dp(6), 1) }
+            showDividers = LinearLayout.SHOW_DIVIDER_MIDDLE
             for (page in DiaryPage.entries) {
                 val count = if (page == DiaryPage.DRAFTS) store.draftCount() else 0
                 val title = if (count > 0) "${page.title} · $count" else page.title
@@ -1659,7 +1656,7 @@ class MainActivity : Activity() {
                 card(loading, trip.title, "Текущий выезд") { showTripDetails(trip.id) }
             }
         }
-        val query = edit("Поиск в записях", diarySearch)
+        val query = searchField("Поиск в записях", diarySearch)
         loading.addView(query, -1, -2)
         loading.addSpace(8)
         val records = vertical()
@@ -1877,12 +1874,13 @@ class MainActivity : Activity() {
         val list = listBody()
         fun section(title: String): LinearLayout {
             list.addSpace(10)
-            list.addView(label(title, 19f, Palette.ink, true).apply {
+            list.addView(label(title, 14f, Palette.muted, true).apply {
+                setPaddingRelative(dp(14), dp(6), 0, 0)
                 if (android.os.Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true
             })
             list.addSpace(8)
             return vertical().apply {
-                background = panel(Palette.white, 20, Palette.border)
+                background = panel(Palette.white, 20)
                 clipToOutline = true
                 list.addView(this, -1, -2)
             }
@@ -1895,8 +1893,9 @@ class MainActivity : Activity() {
         }
 
         val maps = section("Картография")
-        row(maps, if (tiles.offline) "Режим · офлайн" else "Режим · онлайн",
-            if (tiles.offline) "Нажмите, чтобы подключить онлайн-подложки" else "Нажмите для работы с локальными подложками") { toggleOffline() }
+        maps.addView(layerSwitch("Офлайн-режим", tiles.offline) { toggleOffline() }.apply {
+            setPaddingRelative(dp(14), dp(8), dp(14), dp(8))
+        }, -1, -2)
         for (layer in MapLayer.entries) {
             val info = tiles.info(layer.archive)
             val detail = when {

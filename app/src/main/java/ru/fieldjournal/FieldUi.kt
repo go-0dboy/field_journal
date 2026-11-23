@@ -12,15 +12,15 @@ import android.widget.LinearLayout
 import android.widget.TextView
 
 internal object Palette {
-    val paper = 0xfff5f6f9.toInt()
+    val paper = 0xfff6f6f7.toInt()
     val white = 0xffffffff.toInt()
-    val heading = 0xff172741.toInt()
+    val heading = 0xff1a1b20.toInt()
     val accent = 0xff245bbd.toInt()
     val pale = 0xffe9f0fe.toInt()
-    val control = 0xffedf0f5.toInt()
-    val ink = 0xff182233.toInt()
-    val muted = 0xff536074.toInt()
-    val border = 0xffdce3ee.toInt()
+    val control = 0xffeaecef.toInt()
+    val ink = 0xff202126.toInt()
+    val muted = 0xff595c65.toInt()
+    val border = 0xffdadce1.toInt()
     val controlBorder = 0xff9eafc7.toInt()
     val floatingSurface = 0xf2ffffff.toInt()
     val floatingAccent = 0xf5245bbd.toInt()
@@ -57,8 +57,7 @@ internal fun Context.action(
         arrayOf(intArrayOf(-android.R.attr.state_enabled), intArrayOf()),
         intArrayOf(Palette.muted, if (primary) Color.WHITE else Palette.heading)
     ))
-    val fill = panel(if (primary) Palette.accent else Palette.control, 14,
-        if (primary) 0 else Palette.controlBorder).apply {
+    val fill = panel(if (primary) Palette.accent else Palette.control, 22).apply {
         setColor(ColorStateList(
             arrayOf(intArrayOf(-android.R.attr.state_enabled), intArrayOf()),
             intArrayOf(Palette.control, if (primary) Palette.accent else Palette.control)
@@ -94,6 +93,33 @@ internal fun Context.edit(hint: String, value: String, lines: Int = 1) = EditTex
         minLines = lines
         gravity = Gravity.TOP or Gravity.START
     } else setSingleLine(true)
+}
+
+internal fun Context.searchField(hint: String, value: String) = edit(hint, value).apply {
+    background = android.graphics.drawable.StateListDrawable().apply {
+        addState(intArrayOf(android.R.attr.state_focused), panel(Palette.control, 28, Palette.accent))
+        addState(intArrayOf(), panel(Palette.control, 28))
+    }
+    setCompoundDrawablesRelativeWithIntrinsicBounds(fieldGlyph(FieldIcon.SEARCH, 20, Palette.muted), null, null, null)
+    compoundDrawablePadding = dp(8)
+    inputType = android.text.InputType.TYPE_CLASS_TEXT
+    imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH
+}
+
+internal fun Context.valueRow(title: String, value: String, pick: (TextView) -> Unit) = horizontal().apply {
+    background = RippleDrawable(Palette.ripple, panel(Palette.white, 16), null)
+    minimumHeight = dp(56)
+    setPaddingRelative(dp(14), dp(8), dp(12), dp(8))
+    addView(label(title, 16f, Palette.ink, true), LinearLayout.LayoutParams(0, -2, 1f))
+    val current = label(value, 15f, Palette.muted).apply {
+        gravity = Gravity.END or Gravity.CENTER_VERTICAL
+        setPaddingRelative(dp(8), 0, 0, 0)
+        compoundDrawablePadding = dp(5)
+        setCompoundDrawablesRelativeWithIntrinsicBounds(null, null, fieldGlyph(FieldIcon.NEXT, 16, Palette.muted), null)
+    }
+    addView(current, LinearLayout.LayoutParams(0, -2, 1f))
+    isFocusable = true
+    setOnClickListener { pick(current) }
 }
 
 internal fun LinearLayout.addSpace(height: Int) = addView(View(context), 1, context.dp(height))
@@ -215,8 +241,10 @@ internal fun drawSymbol(canvas: Canvas, x: Float, y: Float, radius: Float, type:
 internal fun Context.secondaryAction(caption: String, icon: FieldIcon? = null, click: () -> Unit) =
     action(caption, click = click).apply {
         gravity = Gravity.CENTER_VERTICAL or Gravity.START
+        setTextColor(Palette.accent)
+        background = RippleDrawable(Palette.ripple, null, panel(Color.WHITE, 14))
         if (icon != null) {
-            setCompoundDrawablesRelativeWithIntrinsicBounds(fieldGlyph(icon, 20, Palette.heading), null, null, null)
+            setCompoundDrawablesRelativeWithIntrinsicBounds(fieldGlyph(icon, 20, Palette.accent), null, null, null)
             compoundDrawablePadding = dp(8)
         }
     }
@@ -224,8 +252,9 @@ internal fun Context.secondaryAction(caption: String, icon: FieldIcon? = null, c
 internal fun Context.choiceAction(caption: String, pick: (TextView) -> Unit) =
     action(caption) { }.apply {
         gravity = Gravity.CENTER_VERTICAL or Gravity.START
+        background = RippleDrawable(Palette.ripple, panel(Palette.white, 16), null)
         compoundDrawablePadding = dp(10)
-        setCompoundDrawablesRelativeWithIntrinsicBounds(null, null, fieldGlyph(FieldIcon.CHEVRON_DOWN, 18, Palette.heading), null)
+        setCompoundDrawablesRelativeWithIntrinsicBounds(null, null, fieldGlyph(FieldIcon.NEXT, 18, Palette.muted), null)
         setOnClickListener { pick(this) }
     }
 
@@ -243,7 +272,7 @@ internal fun Context.diaryPageAction(title: String, selected: Boolean, click: ()
         setPadding(dp(4), dp(3), dp(4), dp(3))
         setTextColor(if (selected) Palette.accent else Palette.heading)
         background = RippleDrawable(Palette.ripple,
-            panel(if (selected) Palette.white else Color.TRANSPARENT, 13), panel(Color.WHITE, 13))
+            panel(if (selected) Palette.pale else Palette.white, 13), panel(Color.WHITE, 13))
     }
 
 internal fun Context.navigationAction(title: String, icon: FieldIcon, selected: Boolean, click: () -> Unit) =
@@ -309,6 +338,8 @@ internal enum class FieldIcon(val description: String, val addsItem: Boolean = f
     GPS_VERTEX("Добавить вершину по GPS", true),
     LAYERS("Слои"),
     VISIBLE_OBJECTS("Объекты в видимой области"),
+    SEARCH("Поиск"),
+    NEXT("Перейти"),
     CHEVRON_DOWN("Выбор из списка"),
     FILTER_TYPES("Фильтр по типу"),
     FILTER_LOCATION("Фильтр по привязке"),
@@ -480,6 +511,11 @@ internal class FieldIconDrawable(
                 lineTo(8f, 12f)
                 lineTo(15f, 19f)
             }
+            FieldIcon.SEARCH -> {
+                circle(10f, 10f, 6f)
+                line(15f, 15f, 21f, 21f)
+            }
+            FieldIcon.NEXT -> path { moveTo(9f, 5f); lineTo(16f, 12f); lineTo(9f, 19f) }
             FieldIcon.CHEVRON_DOWN -> path {
                 moveTo(5f, 9f)
                 lineTo(12f, 16f)

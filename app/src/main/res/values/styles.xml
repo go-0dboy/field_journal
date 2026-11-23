@@ -5,7 +5,7 @@
         <item name="android:colorAccent">#245BBD</item>
         <item name="android:windowLightStatusBar">true</item>
         <item name="android:windowActionModeOverlay">true</item>
-        <item name="android:windowBackground">#F5F6F9</item>
+        <item name="android:windowBackground">#F6F6F7</item>
     </style>
     <style name="FieldAlertDialog" parent="android:style/Theme.Material.Light.Dialog.Alert">
         <item name="android:windowBackground">@drawable/field_dialog_background</item>
@@ -13,7 +13,7 @@
         <item name="android:windowMinWidthMinor">90%</item>
         <item name="android:windowMinWidthMajor">52%</item>
         <item name="android:colorAccent">#245BBD</item>
-        <item name="android:textColorPrimary">#182233</item>
+        <item name="android:textColorPrimary">#202126</item>
         <item name="android:buttonBarButtonStyle">@style/FieldDialogButton</item>
         <item name="android:buttonBarPositiveButtonStyle">@style/FieldDialogButton</item>
         <item name="android:buttonBarNeutralButtonStyle">@style/FieldDialogButton</item>

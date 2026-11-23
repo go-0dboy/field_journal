@@ -63,7 +63,7 @@ private val researchChoices = mapOf(
 
 internal fun MainActivity.chooseResearchSite(title: String, allowNone: Boolean, bind: (String?) -> Unit) {
     fieldworkSheet(title) { dialog ->
-        val search = edit("Название или учётный номер", "")
+        val search = searchField("Название или учётный номер", "")
         addView(search, -1, -2)
         if (allowNone) {
             addSpace(8)
@@ -112,15 +112,13 @@ internal fun MainActivity.editStructuredFields(
         setPadding(dp(18), dp(12), dp(18), dp(16))
         for ((key, caption) in captions) {
             val fieldId = android.view.View.generateViewId()
-            addView(label(caption, 14f, Palette.heading, true).apply { labelFor = fieldId }, -1, -2)
-            addSpace(4)
             val options = researchChoices[key]
             val selector = selectors[key]
             if (options != null && key in setOf("location_status", "public", "public_photo")) {
                 var value = current[key].orEmpty()
                 val unset = "Не указано"
                 val choices = listOf(unset) + options
-                addView(choiceAction(value.ifBlank { "Выбрать" }) { button ->
+                addView(valueRow(caption, value.ifBlank { "Выбрать" }) { button ->
                     chooseOption(caption, choices, value.ifBlank { unset }) { selected ->
                         value = selected.takeUnless { it == unset }.orEmpty()
                         button.text = value.ifBlank { "Выбрать" }
@@ -140,7 +138,7 @@ internal fun MainActivity.editStructuredFields(
                     clear.visibility = visibility
                     separator.visibility = visibility
                 }
-                val choice = choiceAction(display()) { button ->
+                val choice = valueRow(caption, display()) { button ->
                     selector { selected ->
                         value = selected
                         button.text = display()
@@ -150,7 +148,7 @@ internal fun MainActivity.editStructuredFields(
                 readers[key] = { value }
                 clear.setOnClickListener {
                     value = ""
-                    choice.text = display()
+                    (choice.getChildAt(1) as android.widget.TextView).text = display()
                     updateClear()
                 }
                 addView(choice, -1, -2)
@@ -158,6 +156,8 @@ internal fun MainActivity.editStructuredFields(
                 addView(clear, -1, -2)
                 updateClear()
             } else {
+                addView(label(caption, 14f, Palette.heading, true).apply { labelFor = fieldId }, -1, -2)
+                addSpace(4)
                 val multiLine = key in setOf("claim", "quote", "description", "methods", "schema", "evidence", "location_evidence", "limits")
                 val input = edit(caption, current[key].orEmpty(), if (multiLine) 2 else 1).apply { id = fieldId }
                 addView(input, -1, -2)

@@ -494,8 +494,8 @@ internal class JournalEditor(
         }
     }
 
-    private fun tripLabel(): String = linkedTrip?.let(activity.store.trips::get)?.let { "Выезд · ${it.title}" }
-        ?: "Привязать к выезду"
+    private fun tripLabel(): String = linkedTrip?.let(activity.store.trips::get)?.title
+        ?: "Не выбран"
 
     private fun chooseTrip(button: TextView) {
         val trips = activity.store.trips.list()
@@ -518,17 +518,16 @@ internal class JournalEditor(
 
     private fun noteMetadata(created: Long, parent: LinearLayout) {
         parent.addView(activity.vertical().apply {
-            background = activity.panel(Palette.pale, 15)
-            setPadding(activity.dp(12), activity.dp(12), activity.dp(12), activity.dp(12))
-            addView(activity.choiceAction(dateLabel(created), ::pickDate), -1, -2)
+            background = activity.panel(Palette.white, 18)
+            addView(activity.valueRow("Дата и время", dateLabel(created), ::pickDate), -1, -2)
             addSpace(8)
-            addView(activity.choiceAction(linkTitle(), ::chooseSite), -1, -2)
+            addView(activity.valueRow("Объект", linkTitle(), ::chooseSite), -1, -2)
         }, -1, -2)
         parent.addSpace(8)
     }
 
     private fun buildNote(value: Note) {
-        body.addView(activity.choiceAction(tripLabel(), ::chooseTrip), -1, -2)
+        body.addView(activity.valueRow("Выезд", tripLabel(), ::chooseTrip), -1, -2)
         body.addSpace(6)
         if (draft.compact) {
             val context = listOfNotNull(value.siteId?.let(activity.store::site)?.title,
@@ -595,9 +594,9 @@ internal class JournalEditor(
     }
 
     private fun linkTitle(): String {
-        val id = linkedSite ?: return "Привязать к объекту"
+        val id = linkedSite ?: return "Не выбран"
         val name = activity.store.site(id)?.title ?: "Объект удалён"
-        return "Объект · $name"
+        return name
     }
 
     fun saveContext(): String? = listOfNotNull(

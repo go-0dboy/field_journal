@@ -536,7 +536,7 @@ class EditorNavigationTest {
             assertTrue(top(root.text("Новый выезд")) < top(root.input("Название выезда")))
             assertFalse(root.descendants().filterIsInstance<TextView>().any { it.text == "Дневник" && it.isShown })
             root.input("Название выезда").setText("Осмотр у реки")
-            root.text("Разведка").performClick()
+            (root.text("Разведка").parent as View).performClick()
             val profiles = ShadowAlertDialog.getLatestAlertDialog().listView
             val index = (0 until profiles.count).first { profiles.adapter.getItem(it) == "Мониторинг" }
             profiles.performItemClick(profiles.adapter.getView(index, null, profiles), index, profiles.adapter.getItemId(index))

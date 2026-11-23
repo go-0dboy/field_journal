@@ -3,8 +3,8 @@ package ru.fieldjournal
 import android.app.AlertDialog
 import android.content.Context
 import android.graphics.Typeface
-import android.os.Build
 import android.view.Gravity
+import android.view.View
 import android.view.WindowManager
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -23,10 +23,7 @@ internal fun Context.fieldPrompt(
     val dialog = AlertDialog.Builder(this).create()
     val body = vertical().apply {
         setPadding(dp(18), dp(20), dp(18), dp(14))
-        addView(label(title, 20f, Palette.heading, true).apply {
-            gravity = Gravity.CENTER
-            if (Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true
-        }, -1, -2)
+        addView(fieldHeading(title, 21f), -1, -2)
         if (detail != null) {
             addSpace(8)
             addView(label(detail, 14f, Palette.muted), -1, -2)
@@ -49,11 +46,11 @@ internal fun Context.fieldPrompt(
         if (choices.isNotEmpty()) {
             addSpace(12)
             addView(horizontal().apply {
-                for (choice in choices) {
+                for ((index, choice) in choices.withIndex()) {
                     addView(action(choice.title) {
                         dialog.dismiss()
                         choice.run()
-                    }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(3) })
+                    }, LinearLayout.LayoutParams(0, -2, 1f).apply { if (index < choices.lastIndex) marginEnd = dp(8) })
                 }
             }, -1, -2)
         }
@@ -102,17 +99,16 @@ internal fun Context.fieldworkSheet(
 ): AlertDialog {
     val dialog = AlertDialog.Builder(this).create()
     val body = vertical().apply {
-        setPadding(dp(16), dp(4), dp(16), dp(16))
+        setPadding(dp(16), dp(12), dp(16), dp(18))
         populate(dialog)
     }
     val container = vertical().apply {
         addView(horizontal().apply {
             setPadding(dp(16), dp(10), dp(10), dp(6))
-            addView(label(title, 21f, Palette.ink, true).apply {
-                if (Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true
-            }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(8) })
+            addView(fieldHeading(title, 21f), LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(8) })
             addView(iconAction(FieldIcon.CLOSE) { dialog.cancel() }, dp(48), dp(48))
         }, -1, -2)
+        addView(View(this@fieldworkSheet).apply { setBackgroundColor(Palette.border) }, -1, dp(1))
         val content = if (scrollBody) ScrollView(this@fieldworkSheet).apply {
             addView(body)
             clipToPadding = false

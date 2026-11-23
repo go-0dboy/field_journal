@@ -217,21 +217,33 @@ internal fun MainActivity.showTripPage(list: LinearLayout, tripId: String) {
     val trip = contents.trip
     list.addView(action("‹ Все выезды") { closeTripDetails() }, -1, -2)
     list.addSpace(10)
-    list.addView(label(trip.title, 22f, Palette.heading, true))
-    list.addView(label(trip.profile, 14f, Palette.muted))
-    list.addView(action("Программа работ") {
+    list.addView(vertical().apply {
+        background = panel(Palette.white, 16, Palette.border)
+        setPadding(dp(14), dp(14), dp(14), dp(14))
+        addView(fieldHeading(trip.title, 23f))
+        addSpace(5)
+        val state = if (trip.endedAt == null) "Текущий выезд" else "Завершён"
+        addView(label("$state · ${trip.profile}", 14f, Palette.accent, true))
+        addSpace(7)
+        addView(label("Начат · ${dateLabel(trip.startedAt)}", 13f, Palette.muted))
+        trip.endedAt?.let { addView(label("Завершён · ${dateLabel(it)}", 13f, Palette.muted)) }
+    }, -1, -2)
+    list.addSpace(10)
+    list.addView(addAction("Запись в выезд", FieldIcon.NOTE) { createNote(null, compact = true, tripId = trip.id) }, -1, -2)
+    list.addSpace(8)
+    list.addView(secondaryAction("Записи выезда · ${contents.notes.size}", FieldIcon.NOTE) {
+        showTripRecords(trip.id)
+    }, -1, -2)
+    list.addSpace(8)
+    list.addView(secondaryAction("Программа работ") {
         editResearch("Программа работ", trip.research, null, tripProfile = trip.profile) {
             store.trips.updateResearch(trip.copy(research = it))
             refreshDiary()
         }
     }, -1, -2)
-    list.addView(label("Начат · ${dateLabel(trip.startedAt)}", 13f, Palette.muted))
-    trip.endedAt?.let { list.addView(label("Завершён · ${dateLabel(it)}", 13f, Palette.muted)) }
-    list.addSpace(8)
-    list.addView(action("Записи выезда · ${contents.notes.size}") { showTripRecords(trip.id) }, -1, -2)
+    list.addSpace(14)
+    list.addView(fieldHeading("Маршрут", 18f))
     list.addSpace(6)
-    list.addView(addAction("Запись в выезд", FieldIcon.NOTE) { createNote(null, compact = true, tripId = trip.id) }, -1, -2)
-    list.addSpace(10)
     val stats = label("", 14f, Palette.muted)
     list.addView(stats)
     list.addSpace(6)

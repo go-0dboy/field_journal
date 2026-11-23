@@ -326,6 +326,16 @@ class MapEditingTest {
             assertTrue(root.icon(FieldIcon.LAYERS).elevation > 0f)
             assertTrue(android.graphics.Color.alpha(Palette.floatingSurface) in 1..254)
 
+            val areaAction = root.icon(FieldIcon.AREA)
+            val pointAction = root.icon(FieldIcon.POINT)
+            val layers = root.icon(FieldIcon.LAYERS)
+            val nav = root.text("Карта")
+            fun onScreen(view: View) = IntArray(2).also(view::getLocationOnScreen)
+            assertTrue(onScreen(pointAction)[1] > onScreen(layers)[1])
+            assertTrue(onScreen(areaAction)[1] + areaAction.height <= onScreen(nav)[1])
+            assertTrue(onScreen(areaAction)[0] + areaAction.width < onScreen(root.icon(FieldIcon.LOCATION))[0])
+            assertTrue(pointAction.width >= 48 && areaAction.width >= 48)
+
             root.icon(FieldIcon.POINT).performClick()
             layout(root)
             val confirm = root.icon(FieldIcon.SET_POINT)

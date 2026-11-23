@@ -555,6 +555,28 @@ class EditorNavigationTest {
         }
     }
 
+    @Test fun dataTabsExposeTheirOwnActionsAndRetainSelection() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        try {
+            val root = controller.get().window.decorView
+            root.text("Данные").performClick()
+            assertTrue(root.text("Карты").isSelected)
+            assertTrue(root.text("Картография").isShown)
+            root.text("Обмен").performClick()
+            assertTrue(root.text("Сохранить полную копию").isShown)
+            assertTrue(root.text("Экспорт выезда").isShown)
+            assertFalse(root.descendants().filterIsInstance<TextView>().any { it.text == "Картография" })
+            root.text("Проект").performClick()
+            assertTrue(root.text("Источники проекта").isShown)
+            controller.recreate()
+            val restored = controller.get().window.decorView
+            assertTrue(restored.text("Проект").isSelected)
+            assertTrue(restored.text("Источники проекта").isShown)
+        } finally {
+            controller.pause().stop().destroy()
+        }
+    }
+
     private fun chooseConfirmation(button: String) {
         ShadowAlertDialog.getLatestAlertDialog().window!!.decorView.text(button).performClick()
         shadowOf(Looper.getMainLooper()).idle()

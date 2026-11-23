@@ -96,9 +96,7 @@ internal class JournalEditor(
     private val stagedAttachments = draft.staged.toMutableSet()
     private val uncertain = site?.uncertainFields.orEmpty().toMutableSet()
     private var parentLink: TextView? = null
-    private var verificationSummary: TextView? = null
-    private val verificationLabels = mapOf("period" to "датировка", "culture" to "атрибуция",
-        "condition" to "состояние", "context" to "контекст")
+    private var verificationNotice: TextView? = null
 
     init {
         body.setPadding(activity.dp(16), activity.dp(10), activity.dp(16), activity.dp(20))
@@ -207,9 +205,10 @@ internal class JournalEditor(
     }
 
     private fun refreshVerificationSummary() {
-        verificationSummary?.apply {
-            visibility = if (uncertain.isEmpty()) View.GONE else View.VISIBLE
-            text = uncertain.mapNotNull(verificationLabels::get).joinToString(", ", "Требуют проверки: ")
+        verificationNotice?.apply {
+            val summary = verificationSummary(uncertain)
+            visibility = if (summary == null) View.GONE else View.VISIBLE
+            text = summary
         }
     }
 
@@ -313,7 +312,7 @@ internal class JournalEditor(
         addLinks()
         addGroup(value)
         section("Датировка и состояние")
-        verificationSummary = activity.label("", 13f, Palette.rust).also { body.addView(it, -1, -2) }
+        verificationNotice = activity.label("", 13f, Palette.rust).also { body.addView(it, -1, -2) }
         refreshVerificationSummary()
         field("period", "Датировка / период", value.period)
         field("culture", "Культура / атрибуция", value.culture)

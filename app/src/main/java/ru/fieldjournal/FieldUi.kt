@@ -303,6 +303,7 @@ internal enum class FieldIcon(val description: String, val addsItem: Boolean = f
     ZOOM_IN("Приблизить"),
     ZOOM_OUT("Отдалить"),
     LOCATION("Моё место"),
+    POSITION_ARROW("Моя позиция"),
     PARENT_AREA("Выбрать родительскую область"),
     CAMERA("Снять фото", true),
     IMAGE("Добавить фото", true),
@@ -588,6 +589,13 @@ internal class FieldIconDrawable(
             FieldIcon.ZOOM_IN, FieldIcon.ZOOM_OUT -> {
                 line(5f, 12f, 19f, 12f)
                 if (icon == FieldIcon.ZOOM_IN) line(12f, 5f, 12f, 19f)
+            }
+            FieldIcon.POSITION_ARROW -> path {
+                moveTo(21f, 3f)
+                lineTo(16f, 21f)
+                lineTo(11f, 13f)
+                lineTo(3f, 9f)
+                close()
             }
             FieldIcon.LOCATION, FieldIcon.GPS_POINT, FieldIcon.GPS_VERTEX -> {
                 circle(12f, 12f, 8f)

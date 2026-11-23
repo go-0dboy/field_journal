@@ -71,7 +71,13 @@ internal enum class CoordinateOrigin(val id: String, val title: String) {
     }
 }
 
-internal val verifiableSiteFields = setOf("period", "culture", "condition", "context")
+private val verificationFieldLabels = linkedMapOf("period" to "датировка", "culture" to "атрибуция",
+    "condition" to "состояние", "context" to "контекст")
+internal val verifiableSiteFields = verificationFieldLabels.keys
+
+internal fun verificationSummary(fields: Set<String>): String? =
+    verificationFieldLabels.filterKeys(fields::contains).values.takeIf { it.isNotEmpty() }
+        ?.joinToString(", ", "Требуют проверки: ")
 
 internal data class Site(
     val id: String = newId(),

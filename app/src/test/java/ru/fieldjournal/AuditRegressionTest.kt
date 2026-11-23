@@ -104,7 +104,10 @@ class AuditRegressionTest {
             assertEquals(5, (site.extraProperties["archive_ref"] as JSONObject).getInt("fond"))
             assertEquals(listOf(site.id), journal.locatedSites().map(Site::id))
             assertEquals("unlocated", journal.catalogPage("ЧАСОВНЯ", null, "Не локализован", 40).single().id)
-            assertFalse(requireNotNull(journal.site("unlocated")).located)
+            val unlocated = requireNotNull(journal.site("unlocated"))
+            assertFalse(unlocated.located)
+            journal.save(unlocated.copy(research = ResearchCard(fields = mapOf("location_status" to "Ориентир по источнику"))))
+            assertEquals("unlocated", journal.catalogPage("", null, null, 40, withoutCoordinates = true).single().id)
             val feature = site.feature()
             assertEquals(112.45, feature.getJSONObject("geometry").getJSONArray("coordinates").getDouble(2), 0.0)
         }

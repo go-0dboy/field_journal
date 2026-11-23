@@ -140,6 +140,7 @@ internal fun MainActivity.showSitePreview(site: Site) {
         site.parentId?.let(store::site)?.let { parent ->
             addView(action("В составе «${parent.title}»") { dialog.dismiss(); openSite(parent.id) }, -1, -2)
         }
+        verificationSummary(site.uncertainFields)?.let { addView(label(it, 13f, Palette.rust)) }
         addSpace(5)
         visit?.let { addView(label("Последнее посещение · ${dateLabel(it)}", 13f, Palette.muted)) }
         addView(label(latest?.let { "Последнее наблюдение · ${dateLabel(it.created)}" }

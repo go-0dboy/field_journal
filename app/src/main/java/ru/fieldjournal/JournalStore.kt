@@ -128,11 +128,12 @@ internal class JournalStore(
         buildList { while (rows.moveToNext()) add(Site.read(JSONObject(rows.getString(0)), true, validate = false)) }
     }
 
-    fun catalogPage(query: String, type: String?, status: String?, limit: Int): List<CatalogEntry> {
+    fun catalogPage(query: String, type: String?, status: String?, limit: Int, withoutCoordinates: Boolean = false): List<CatalogEntry> {
         val parts = mutableListOf<String>()
         val args = mutableListOf<String>()
         if (type != null) { parts += "child.catalog_type = ?"; args += type }
         if (status != null) { parts += "child.location_status = ?"; args += status }
+        if (withoutCoordinates) parts += "child.located = 0"
         if (query.isNotBlank()) {
             parts += "(instr(child.search_key, ?) > 0 OR instr(parent.search_key, ?) > 0)"
             repeat(2) { args += query.trim().lowercase(java.util.Locale.ROOT) }

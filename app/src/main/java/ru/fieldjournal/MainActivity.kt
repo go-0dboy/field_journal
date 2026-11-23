@@ -821,7 +821,7 @@ class MainActivity : Activity() {
 
     private enum class CoordinateSource(val title: String, val icon: FieldIcon) {
         CENTER("Центр карты", FieldIcon.COORDINATES),
-        DEVICE("Моя позиция", FieldIcon.LOCATION),
+        DEVICE("Моя позиция", FieldIcon.POSITION_ARROW),
         POINT("Выбранная точка", FieldIcon.POINT)
     }
 
@@ -1460,15 +1460,10 @@ class MainActivity : Activity() {
             resetCatalogPosition()
             render()
         })
-        controls.addView(action(if (catalogResearchFilter == "Не локализован") "Без координат"
-            else catalogResearchFilter.ifBlank { "Привязка" }) {
+        controls.addView(action(catalogResearchFilter.ifBlank { "Привязка" }) {
             val statuses = arrayOf("Все привязки", "Без координат", "Ориентир по источнику", "Проверен в поле")
             AlertDialog.Builder(this).setTitle("Состояние привязки").setItems(statuses) { _, index ->
-                catalogResearchFilter = when (index) {
-                    0 -> ""
-                    1 -> "Не локализован"
-                    else -> statuses[index]
-                }
+                catalogResearchFilter = if (index == 0) "" else statuses[index]
                 resetCatalogPosition()
                 render()
             }.setPositiveButton("Отмена", null).show()
@@ -1500,7 +1495,9 @@ class MainActivity : Activity() {
         results.adapter = adapter
         results.setOnItemClickListener { _, _, position, _ -> openSite(adapter.getItem(position).id) }
         fun showMatches() {
-            val page = store.catalogPage(search, filter, catalogResearchFilter.ifBlank { null }, pageSize + 1)
+            val withoutCoordinates = catalogResearchFilter == "Без координат"
+            val status = catalogResearchFilter.takeIf { it.isNotBlank() && !withoutCoordinates }
+            val page = store.catalogPage(search, filter, status, pageSize + 1, withoutCoordinates)
             matches = page.take(pageSize)
             adapter.notifyDataSetChanged()
             count.text = if (page.size > pageSize) "Показаны первые ${matches.size}" else "Найдено · ${matches.size}"

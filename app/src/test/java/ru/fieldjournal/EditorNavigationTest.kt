@@ -261,7 +261,7 @@ class EditorNavigationTest {
             assertTrue(top(hint) >= top(install) + install.height)
             assertTrue(top(hint) + hint.height <= top(root.action("Моё место")))
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(5))
-            assertEquals(View.GONE, hint.visibility)
+            assertFalse(hint.isShown)
             root.action(FieldIcon.CANCEL.description).performClick()
 
             root.text("Дневник").performClick()

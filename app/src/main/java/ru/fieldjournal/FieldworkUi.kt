@@ -198,37 +198,13 @@ internal fun MainActivity.showDrafts(list: LinearLayout) {
 internal fun MainActivity.showTrips(list: LinearLayout) {
     val trips = store.trips.list()
     if (trips.none { it.endedAt == null }) {
-        list.addView(addAction("Новый выезд", FieldIcon.TRIP) { promptTripName() }, -1, -2)
+        list.addView(addAction("Новый выезд", FieldIcon.TRIP) { openNewTrip() }, -1, -2)
         list.addSpace(8)
     }
     if (trips.isEmpty()) empty(list, "Выездов пока нет", "Выезд объединяет записи, посещения и маршрут одной полевой работы.")
     for (trip in trips) {
         val status = if (trip.endedAt == null) "Текущий выезд" else "Завершён"
         card(list, trip.title, "$status · ${dateLabel(trip.startedAt)}") { showTripDetails(trip.id) }
-    }
-}
-
-private fun MainActivity.promptTripName() {
-    fieldworkSheet("Новый выезд") { dialog ->
-        val name = edit("Название выезда", "Выезд · ${java.time.LocalDate.now()}")
-        val profiles = listOf("Разведка", "Мониторинг", "Раскоп", "Историческое обследование")
-        var profile = profiles.first()
-        val mode = action(profile) { }
-        mode.setOnClickListener {
-            android.app.AlertDialog.Builder(this@promptTripName).setTitle("Профиль работ")
-                .setItems(profiles.toTypedArray()) { _, index -> profile = profiles[index]; mode.text = profile }
-                .setPositiveButton("Отмена", null).show()
-        }
-        addView(name, -1, -2)
-        addSpace(5)
-        addView(mode, -1, -2)
-        addSpace(10)
-        addView(addAction("Начать выезд", FieldIcon.TRIP) {
-            runCatching { store.trips.start(name.text.toString().take(120), profile = profile) }.onSuccess { trip ->
-                dialog.dismiss()
-                showTripDetails(trip.id)
-            }.onFailure { message(it.message ?: "Не удалось начать выезд") }
-        }, -1, -2)
     }
 }
 

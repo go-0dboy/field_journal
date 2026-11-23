@@ -81,7 +81,7 @@ class EditorNavigationTest {
             restoredRoot.action("Открыть ссылку ${siteLink.title}").performClick()
             assertEquals(siteLink.url, shadowOf(restored).nextStartedActivity.dataString)
             restoredRoot.action("Сохранить и закрыть").performClick()
-            chooseConfirmation("Сохранить объект")
+            chooseConfirmation("Сохранить")
             assertEquals(listOf(siteLink), restored.store.site(site.id)?.links)
 
             restored.createNote(site.id, compact = true)
@@ -107,7 +107,7 @@ class EditorNavigationTest {
             sheet.input("Адрес сайта").setText(noteLink.url)
             sheet.text("Добавить").performClick()
             restoredRoot.action("Сохранить и закрыть").performClick()
-            chooseConfirmation("Сохранить запись")
+            chooseConfirmation("Сохранить")
             val saved = restored.store.notes().single { it.siteId == site.id }
             assertEquals(noteBody, saved.body)
             assertEquals(listOf(noteLink), saved.links)
@@ -143,7 +143,7 @@ class EditorNavigationTest {
             root.input("Заголовок").setText("Повторный обход")
             root.action("Сохранить и закрыть").performClick()
             assertFalse(controller.get().store.notes().any { it.title == "Повторный обход" })
-            chooseConfirmation("Сохранить запись")
+            chooseConfirmation("Сохранить")
             root.text("Карточка объекта")
             root.text("Сохранено · Стоянка у реки")
             assertTrue(controller.get().store.notes().any { it.siteId == site.id && it.title == "Повторный обход" })
@@ -168,7 +168,7 @@ class EditorNavigationTest {
             assertFalse(map.editingGeometry)
             val confirmation = ShadowAlertDialog.getLatestAlertDialog().window!!.decorView
             confirmation.text("Сохранить изменения?")
-            chooseConfirmation("Сохранить объект")
+            chooseConfirmation("Сохранить")
             assertTrue(root.text("Новая запись").isShown)
             val saved = requireNotNull(activity.store.site(original.id))
             assertEquals("Стоянка у реки", saved.title)
@@ -239,7 +239,7 @@ class EditorNavigationTest {
             assertEquals(1, root.descendants().filterIsInstance<TextView>().count { it.text == file.name })
             assertTrue(restored.store.site(site.id)!!.attachments.isEmpty())
             restored.closeEditor()
-            chooseConfirmation("Сохранить объект")
+            chooseConfirmation("Сохранить")
             val saved = restored.store.site(site.id)!!.attachments.single()
             assertEquals("image bytes", restored.store.attachmentFile(saved.id).readText())
         } finally {
@@ -286,7 +286,7 @@ class EditorNavigationTest {
             chooseConfirmation("Отмена")
             assertEquals("Черновая запись", restored.input("Заголовок").text.toString())
             restored.action("Назад").performClick()
-            chooseConfirmation("Отбросить изменения")
+            chooseConfirmation("Не сохранять")
             restored.text("Дневник")
             assertTrue(activity.store.notes().all { it.id in knownIds })
         } finally {
@@ -307,7 +307,7 @@ class EditorNavigationTest {
             root.descendants().filterIsInstance<JournalEditor>().single().stageAttachment(attachment)
             assertEquals(original, activity.store.site(original.id))
             root.action("Назад").performClick()
-            chooseConfirmation("Отбросить изменения")
+            chooseConfirmation("Не сохранять")
             assertEquals(original, activity.store.site(original.id))
             assertFalse(activity.store.attachmentFile(attachment.id).exists())
         } finally {
@@ -332,7 +332,7 @@ class EditorNavigationTest {
             root.input("Короткая заметка").setText("Северная граница проверена")
             root.descendants().filterIsInstance<JournalEditor>().single().stageAttachment(photo)
             root.action("Назад").performClick()
-            chooseConfirmation("Оставить в черновиках")
+            chooseConfirmation("В черновики")
             assertTrue(activity.store.noteSummaries(site.id).isEmpty())
             assertEquals(1, activity.store.draftCount())
         } finally {
@@ -349,7 +349,7 @@ class EditorNavigationTest {
             assertEquals("Северная граница проверена", root.input("Короткая заметка").text.toString())
             root.text(photo.name)
             root.action("Сохранить и закрыть").performClick()
-            chooseConfirmation("Сохранить запись")
+            chooseConfirmation("Сохранить")
             assertEquals(0, reopened.store.draftCount())
             val contents = reopened.store.trips.contents(trip.id)
             val note = contents.notes.single()
@@ -518,8 +518,38 @@ class EditorNavigationTest {
             assertTrue(activity.store.site(site.id)!!.research.entries.isEmpty())
             assertEquals("Зафиксирована кладка", activity.store.draft(site.id)!!.site!!.research.entries.single().fields["result"])
             root.action("Сохранить и закрыть").performClick()
-            chooseConfirmation("Сохранить объект")
+            chooseConfirmation("Сохранить")
             assertEquals("Зафиксирована кладка", activity.store.site(site.id)!!.research.entries.single().fields["result"])
+        } finally {
+            controller.pause().stop().destroy()
+        }
+    }
+
+    @Test fun newTripIsAFullScreenCardAndRestoresSelectedType() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        try {
+            val root = controller.get().window.decorView
+            root.text("Дневник").performClick()
+            root.text("Выезды").performClick()
+            root.text("Новый выезд").performClick()
+            layout(root)
+            assertTrue(top(root.text("Новый выезд")) < top(root.input("Название выезда")))
+            assertFalse(root.descendants().filterIsInstance<TextView>().any { it.text == "Дневник" && it.isShown })
+            root.input("Название выезда").setText("Осмотр у реки")
+            root.text("Разведка").performClick()
+            val profiles = ShadowAlertDialog.getLatestAlertDialog().listView
+            val index = (0 until profiles.count).first { profiles.adapter.getItem(it) == "Мониторинг" }
+            profiles.performItemClick(profiles.adapter.getView(index, null, profiles), index, profiles.adapter.getItemId(index))
+
+            controller.recreate()
+            val activity = controller.get()
+            val restored = activity.window.decorView
+            assertEquals("Осмотр у реки", restored.input("Название выезда").text.toString())
+            restored.text("Мониторинг")
+            restored.action("Сохранить и закрыть").performClick()
+            val trip = requireNotNull(activity.store.trips.active())
+            assertEquals("Осмотр у реки", trip.title)
+            assertEquals("Мониторинг", trip.profile)
         } finally {
             controller.pause().stop().destroy()
         }

@@ -47,6 +47,9 @@ class MainActivity : Activity() {
     }
     private var diaryPage = DiaryPage.RECORDS
     private var diaryTripId: String? = null
+    private data class NewTrip(var title: String, var profile: String)
+    private var newTrip: NewTrip? = null
+    private val tripProfiles = listOf("Разведка", "Мониторинг", "Раскоп", "Историческое обследование")
     private var filterTripNotes: String? = null
     private var drawingParentId: String? = null
     private var hiddenTripId: String? = null
@@ -216,6 +219,8 @@ class MainActivity : Activity() {
             trackTripId = it.getString("trackTripId")
             diaryPage = DiaryPage.valueOf(it.getString("diaryPage", DiaryPage.RECORDS.name))
             diaryTripId = it.getString("diaryTripId")
+            val tripProfile = it.getString("newTripProfile", tripProfiles.first())
+            newTrip = it.getString("newTripTitle")?.let { title -> NewTrip(title, tripProfile) }
             filterTripNotes = it.getString("filterTripNotes")
             drawingParentId = it.getString("drawingParentId")
             hiddenTripId = it.getString("hiddenTripId")
@@ -346,6 +351,10 @@ class MainActivity : Activity() {
         out.putString("trackTripId", trackTripId)
         out.putString("diaryPage", diaryPage.name)
         out.putString("diaryTripId", diaryTripId)
+        newTrip?.let {
+            out.putString("newTripTitle", it.title)
+            out.putString("newTripProfile", it.profile)
+        }
         out.putString("filterTripNotes", filterTripNotes)
         out.putString("drawingParentId", drawingParentId)
         out.putString("hiddenTripId", hiddenTripId)
@@ -417,6 +426,7 @@ class MainActivity : Activity() {
     @Deprecated("Uses the activity back stack for a map editor with a persistent draft")
     override fun onBackPressed() {
         when {
+            newTrip != null -> closeNewTrip()
             editorId != null -> closeEditor()
             drawMode != DrawMode.NONE -> cancelDraw()
             tab == Tab.NOTES && diaryPage == DiaryPage.TRIPS && diaryTripId != null -> {
@@ -457,6 +467,11 @@ class MainActivity : Activity() {
         nav.removeAllViews()
         screen.removeView(mapPanel)
         root.setBackgroundColor(Palette.paper)
+        newTrip?.let { draft ->
+            updateNavigationVisibility()
+            showNewTrip(draft)
+            return
+        }
         if (editorId != null) {
             val id = requireNotNull(editorId)
             val draft = draftToOpen?.takeIf { it.id == id } ?: store.draft(id) ?: if (editorIsNote) {
@@ -503,23 +518,72 @@ class MainActivity : Activity() {
     }
 
     private fun updateNavigationVisibility() {
-        nav.visibility = if (editorId != null || keyboardVisible) View.GONE else View.VISIBLE
+        nav.visibility = if (editorId != null || newTrip != null || keyboardVisible) View.GONE else View.VISIBLE
     }
 
-    private fun setEditorHeader(title: String) {
+    private fun setEditorHeader(title: String, back: () -> Unit = ::closeEditor, done: () -> Unit = ::closeEditor) {
         val row = horizontal().apply {
             setPadding(dp(16), dp(8), dp(16), dp(8))
             setBackgroundColor(Palette.white)
         }
-        row.addView(editorAction(done = false) { closeEditor() }, dp(48), dp(48))
+        row.addView(editorAction(done = false, click = back), dp(48), dp(48))
         val name = label(title, 19f, Palette.heading, true)
         if (android.os.Build.VERSION.SDK_INT >= 28) name.isAccessibilityHeading = true
         row.addView(name, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(10) })
-        row.addView(editorAction(done = true) { closeEditor() }, LinearLayout.LayoutParams(dp(48), dp(48)).apply {
+        row.addView(editorAction(done = true, click = done), LinearLayout.LayoutParams(dp(48), dp(48)).apply {
             marginStart = dp(8)
         })
         header.addView(row)
         header.addView(View(this).apply { setBackgroundColor(Palette.border) }, -1, dp(1))
+    }
+
+    internal fun openNewTrip() {
+        newTrip = NewTrip("Выезд · ${java.time.LocalDate.now()}", tripProfiles.first())
+        render()
+    }
+
+    private fun closeNewTrip() {
+        newTrip = null
+        getSystemService(InputMethodManager::class.java)?.hideSoftInputFromWindow(root.windowToken, 0)
+        render()
+    }
+
+    private fun showNewTrip(draft: NewTrip) {
+        val name = edit("Название выезда", draft.title)
+        name.id = View.generateViewId()
+        name.watch { draft.title = it }
+        setEditorHeader("Новый выезд", back = ::closeNewTrip, done = {
+            val title = draft.title.trim()
+            if (title.isEmpty()) {
+                name.error = "Укажите название выезда"
+                name.requestFocus()
+            } else {
+                runCatching { store.trips.start(title.take(120), profile = draft.profile) }.onSuccess { trip ->
+                    newTrip = null
+                    showTripDetails(trip.id)
+                }.onFailure { message(it.message ?: "Не удалось начать выезд") }
+            }
+        })
+        content.addView(ScrollView(this).apply {
+            addView(vertical().apply {
+                setPadding(dp(16), dp(14), dp(16), dp(20))
+                addView(label("Название выезда", 13f, Palette.muted, true).apply { labelFor = name.id })
+                addSpace(4)
+                addView(name, -1, -2)
+                addSpace(14)
+                val profile = choiceAction(draft.profile) { button ->
+                    chooseOption("Тип выезда", tripProfiles, draft.profile) {
+                        draft.profile = it
+                        button.text = it
+                    }
+                }
+                profile.id = View.generateViewId()
+                addView(label("Тип выезда", 13f, Palette.muted, true).apply { labelFor = profile.id })
+                addSpace(4)
+                addView(profile, -1, -2)
+            })
+        }, -1, -1)
+        root.requestFocus()
     }
 
     private fun switch(next: Tab) {
@@ -764,11 +828,11 @@ class MainActivity : Activity() {
                     control(FieldIcon.CANCEL) { cancelDraw() }
                 }
                 DrawMode.AREA, DrawMode.MOVE_AREA -> {
+                    control(FieldIcon.LAYERS) { chooseLayers() }
                     control(FieldIcon.ADD_VERTEX) { addVertex(map.center) }
                     control(FieldIcon.GPS_VERTEX) {
                         captureLocation(LocationAction.ADD_VERTEX)
                     }
-                    undoVertexButton = control(FieldIcon.UNDO_VERTEX) { undoBoundaryChange() }
                     spacer()
                     finishAreaButton = control(FieldIcon.DONE_AREA, true) {
                         val error = polygonError(vertices)
@@ -783,7 +847,9 @@ class MainActivity : Activity() {
             setPadding(dp(12), 0, dp(12), 0)
             mapArea.setPadding(0, dp(3), 0, dp(3))
             addView(mapArea, LinearLayout.LayoutParams(0, -2, 1f))
-            addView(mapAction(FieldIcon.LAYERS) { chooseLayers() }, dp(48), dp(48))
+            undoVertexButton = mapAction(FieldIcon.UNDO_VERTEX) { undoBoundaryChange() }.also {
+                addView(it, dp(48), dp(48))
+            }
         }, -1, -2)
         header.addView(mapComparisonStatus, -1, -2)
         header.addView(mapTripStatus, -1, -2)
@@ -1006,7 +1072,7 @@ class MainActivity : Activity() {
 
     internal fun openGroupSite(id: String) = confirmBeforeLeaving { openSite(id) }
 
-    internal fun editGeometry(site: Site) {
+    internal fun editGeometry(site: Site, area: Boolean = site.area) {
         val draft = editView?.snapshot() ?: EditorDraft(site = site)
         persistEditorDraft()
         detachEditor()
@@ -1015,8 +1081,9 @@ class MainActivity : Activity() {
         map.show(site)
         geometryDraft = draft
         geometrySite = site.id
-        if (site.area) vertices.addAll(site.vertices) else selectedPoint = site.takeIf(Site::located)?.anchor
-        beginDraw(if (site.area) DrawMode.MOVE_AREA else DrawMode.MOVE_POINT)
+        if (area && site.area) vertices.addAll(site.vertices)
+        if (!area) selectedPoint = site.takeIf(Site::located)?.anchor
+        beginDraw(if (area) DrawMode.MOVE_AREA else DrawMode.MOVE_POINT)
     }
 
     internal fun centerForPicker(): Coordinate = recentFix()?.point ?: map.center
@@ -1209,8 +1276,6 @@ class MainActivity : Activity() {
             fun redrawControls() {
                 controls.removeAllViews()
                 controls.addView(horizontal().apply {
-                    background = panel(Palette.paper, 18)
-                    setPadding(dp(3), dp(3), dp(3), dp(3))
                     for (layer in MapLayer.entries) {
                         addView(action(layer.title, tiles.layer == layer) {
                             if (tiles.layer != layer) {
@@ -1223,7 +1288,7 @@ class MainActivity : Activity() {
                             isSelected = tiles.layer == layer
                             setPadding(dp(3), 0, dp(3), 0)
                         }, LinearLayout.LayoutParams(0, -2, 1f).apply {
-                            if (layer != MapLayer.entries.last()) marginEnd = dp(3)
+                            if (layer != MapLayer.entries.last()) marginEnd = dp(8)
                         })
                     }
                 }, -1, -2)
@@ -1344,17 +1409,16 @@ class MainActivity : Activity() {
                         map.refresh()
                     }, -1, -2)
                     if (!tiles.offline) {
-                        group.addView(action("Подписи · ${source.title}") {
-                            AlertDialog.Builder(this@MainActivity)
-                                .setTitle("Источник подписей")
-                                .setSingleChoiceItems(ReferenceSource.entries.map(ReferenceSource::title).toTypedArray(), source.ordinal) { picker, index ->
-                                    tiles.onlineReferenceSource = ReferenceSource.entries[index]
-                                    map.refresh()
-                                    picker.dismiss()
-                                    redrawControls()
-                                }.setPositiveButton("Отмена", null).show()
+                        group.addSpace(8)
+                        group.addView(choiceAction("Подписи · ${source.title}") {
+                            chooseOption("Источник подписей", ReferenceSource.entries.map(ReferenceSource::title), source.title) { title ->
+                                tiles.onlineReferenceSource = ReferenceSource.entries.first { it.title == title }
+                                map.refresh()
+                                redrawControls()
+                            }
                         }, -1, -2)
                     }
+                    group.addSpace(8)
                     group.addView(label(references?.name ?: "Подключите прозрачный пакет для локальных подписей", 13f, Palette.muted))
                     group.addSpace(6)
                     val connect = {
@@ -1369,10 +1433,12 @@ class MainActivity : Activity() {
                     toggleOffline()
                     redrawControls()
                 }, -1, -2)
+                controls.addSpace(8)
                 controls.addView(action("Проверить покрытие офлайн") {
                     dialog.dismiss()
                     checkOfflineCoverage()
                 }, -1, -2)
+                controls.addSpace(8)
                 controls.addView(action("Настройки карт") {
                     dialog.dismiss()
                     switch(Tab.SETTINGS)
@@ -1451,23 +1517,28 @@ class MainActivity : Activity() {
 
     private fun showSites() {
         val panel = vertical().apply { setPadding(dp(14), dp(5), dp(14), dp(8)) }
-        val query = edit("Название, номер, место или источник", search)
+        val query = edit("Поиск объектов", search).apply {
+            contentDescription = "Поиск по названию, номеру, месту или источнику"
+        }
         val controls = horizontal()
-        controls.addView(action(filter?.let { objectType(it).title } ?: "Все типы") { chooseFilter() },
-            LinearLayout.LayoutParams(0, -2, 1f))
-        if (filter != null) controls.addView(action("Сбросить") {
-            filter = null
-            resetCatalogPosition()
-            render()
-        })
-        controls.addView(action(catalogResearchFilter.ifBlank { "Привязка" }) {
-            val statuses = arrayOf("Все привязки", "Без координат", "Ориентир по источнику", "Проверен в поле")
-            AlertDialog.Builder(this).setTitle("Состояние привязки").setItems(statuses) { _, index ->
-                catalogResearchFilter = if (index == 0) "" else statuses[index]
+        controls.addView(query, LinearLayout.LayoutParams(0, -2, 1f))
+        fun filterButton(icon: FieldIcon, value: String?, open: () -> Unit) {
+            val description = listOfNotNull(icon.description, value).joinToString(" · ")
+            val button = iconAction(icon, description, primary = value != null, click = open).apply {
+                isSelected = value != null
+            }
+            controls.addView(button, LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginStart = dp(8) })
+        }
+        val selectedType = filter?.let { objectType(it).title }
+        filterButton(FieldIcon.FILTER_TYPES, selectedType, ::chooseFilter)
+        filterButton(FieldIcon.FILTER_LOCATION, catalogResearchFilter.ifBlank { null }) {
+            val statuses = listOf("Все привязки", "Без координат", "Ориентир по источнику", "Проверен в поле")
+            chooseOption("Фильтр по привязке", statuses, catalogResearchFilter.ifBlank { statuses.first() }) { status ->
+                catalogResearchFilter = status.takeUnless { it == statuses.first() }.orEmpty()
                 resetCatalogPosition()
                 render()
-            }.setPositiveButton("Отмена", null).show()
-        }, LinearLayout.LayoutParams(0, -2, 1f))
+            }
+        }
         val count = label("", 14f, Palette.muted).apply {
             setPadding(dp(3), dp(7), dp(3), dp(7))
             accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
@@ -1508,7 +1579,7 @@ class MainActivity : Activity() {
                 else "Измените поиск или фильтры.")
         }
         more.setOnClickListener { pageSize += 160; showMatches() }
-        panel.addView(addAction("Объект без координат", FieldIcon.POINT, primary = false) {
+        panel.addView(addAction("Объект без координат", FieldIcon.POINT) {
             chooseType("Условный знак объекта") { type ->
                 previousTab = tab
                 openDraft(EditorDraft(site = Site(title = type.title, type = type.id, vertices = emptyList()), isNew = true))
@@ -1520,9 +1591,13 @@ class MainActivity : Activity() {
             showMatches()
             results.setSelection(0)
         }
-        panel.addView(query, -1, -2)
-        panel.addSpace(6)
+        panel.addSpace(8)
         panel.addView(controls, -1, -2)
+        val selectedFilters = listOfNotNull(selectedType, catalogResearchFilter.ifBlank { null })
+        if (selectedFilters.isNotEmpty()) {
+            panel.addSpace(6)
+            panel.addView(label(selectedFilters.joinToString(" · ", "Фильтры: "), 13f, Palette.heading), -1, -2)
+        }
         panel.addView(count)
         panel.addView(resultsPanel, LinearLayout.LayoutParams(-1, 0, 1f))
         panel.addView(more, -1, -2)
@@ -1533,12 +1608,12 @@ class MainActivity : Activity() {
     }
 
     private fun chooseFilter() {
-        val names = arrayOf("Все типы") + objectTypes.map(ObjectType::title).toTypedArray()
-        AlertDialog.Builder(this).setTitle("Фильтр каталога и карты").setItems(names) { _, choice ->
-            filter = objectTypes.getOrNull(choice - 1)?.id
+        val names = listOf("Все типы") + objectTypes.map(ObjectType::title)
+        chooseOption("Фильтр по типу", names, filter?.let { objectType(it).title } ?: names.first()) { name ->
+            filter = objectTypes.firstOrNull { it.title == name }?.id
             resetCatalogPosition()
             render()
-        }.setPositiveButton("Отмена", null).show()
+        }
     }
 
     private fun showNotes() {
@@ -2123,19 +2198,19 @@ class MainActivity : Activity() {
         fieldPrompt(
             title = question,
             detail = listOfNotNull(editor.adoptionNotice(), saveContext).joinToString("\n").ifBlank { null },
-            primary = PromptAction(if (editorIsNote) "Сохранить запись" else "Сохранить объект") {
+            primary = PromptAction("Сохранить") {
                 if (editor.saveConfirmed()) {
                     after()
                     message(saveContext?.let { "Сохранено · $it" } ?: "Сохранено")
                 }
             },
-            secondary = PromptAction("Отбросить изменения") {
+            secondary = PromptAction("Не сохранять") {
                 if (editor.discardDraft()) after()
             },
             destructive = true,
-            alternative = PromptAction("Оставить в черновиках") {
+            choices = listOf(PromptAction("В черновики") {
                 if (persistEditorDraft()) after()
-            }
+            })
         )
     }
 

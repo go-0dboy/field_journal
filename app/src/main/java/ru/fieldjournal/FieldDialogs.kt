@@ -18,8 +18,7 @@ internal fun Context.fieldPrompt(
     coordinates: String? = null,
     destructive: Boolean = false,
     choices: List<PromptAction> = emptyList(),
-    detail: String? = null,
-    alternative: PromptAction? = null
+    detail: String? = null
 ) {
     val dialog = AlertDialog.Builder(this).create()
     val body = vertical().apply {
@@ -66,12 +65,6 @@ internal fun Context.fieldPrompt(
         val left = if (secondary == null) main else {
             addView(main, -1, -2)
             addSpace(6)
-            alternative?.let {
-                addView(secondaryAction(it.title) {
-                    dialog.dismiss()
-                    it.run()
-                }, -1, -2)
-            }
             action(secondary.title) {
                 dialog.dismiss()
                 secondary.run()

@@ -21,6 +21,7 @@ internal object Palette {
     val ink = 0xff182233.toInt()
     val muted = 0xff536074.toInt()
     val border = 0xffdce3ee.toInt()
+    val controlBorder = 0xff9eafc7.toInt()
     val floatingSurface = 0xf2ffffff.toInt()
     val floatingAccent = 0xf5245bbd.toInt()
     val notice = 0xee182941.toInt()
@@ -51,12 +52,13 @@ internal fun Context.action(
 ) = label(caption, 14f, if (primary) Color.WHITE else Palette.heading, true).apply {
     gravity = Gravity.CENTER
     minimumHeight = dp(48)
-    setPadding(dp(12), 0, dp(12), 0)
+    setPadding(dp(12), dp(7), dp(12), dp(7))
     setTextColor(ColorStateList(
         arrayOf(intArrayOf(-android.R.attr.state_enabled), intArrayOf()),
         intArrayOf(Palette.muted, if (primary) Color.WHITE else Palette.heading)
     ))
-    val fill = panel(if (primary) Palette.accent else Palette.control, 15).apply {
+    val fill = panel(if (primary) Palette.accent else Palette.control, 14,
+        if (primary) 0 else Palette.controlBorder).apply {
         setColor(ColorStateList(
             arrayOf(intArrayOf(-android.R.attr.state_enabled), intArrayOf()),
             intArrayOf(Palette.control, if (primary) Palette.accent else Palette.control)
@@ -213,13 +215,27 @@ internal fun drawSymbol(canvas: Canvas, x: Float, y: Float, radius: Float, type:
 internal fun Context.secondaryAction(caption: String, icon: FieldIcon? = null, click: () -> Unit) =
     action(caption, click = click).apply {
         gravity = Gravity.CENTER_VERTICAL or Gravity.START
-        setTextColor(Palette.accent)
-        background = RippleDrawable(Palette.ripple, null, panel(Color.WHITE, 14))
         if (icon != null) {
-            setCompoundDrawablesRelativeWithIntrinsicBounds(fieldGlyph(icon, 20, Palette.accent), null, null, null)
+            setCompoundDrawablesRelativeWithIntrinsicBounds(fieldGlyph(icon, 20, Palette.heading), null, null, null)
             compoundDrawablePadding = dp(8)
         }
     }
+
+internal fun Context.choiceAction(caption: String, pick: (TextView) -> Unit) =
+    action(caption) { }.apply {
+        gravity = Gravity.CENTER_VERTICAL or Gravity.START
+        compoundDrawablePadding = dp(10)
+        setCompoundDrawablesRelativeWithIntrinsicBounds(null, null, fieldGlyph(FieldIcon.CHEVRON_DOWN, 18, Palette.heading), null)
+        setOnClickListener { pick(this) }
+    }
+
+internal fun Context.chooseOption(title: String, options: List<String>, selected: String, pick: (String) -> Unit) {
+    android.app.AlertDialog.Builder(this).setTitle(title)
+        .setSingleChoiceItems(options.toTypedArray(), options.indexOf(selected)) { dialog, index ->
+            dialog.dismiss()
+            pick(options[index])
+        }.setPositiveButton("Отмена", null).show()
+}
 
 internal fun Context.diaryPageAction(title: String, selected: Boolean, click: () -> Unit) =
     action(title, click = click).apply {
@@ -293,6 +309,9 @@ internal enum class FieldIcon(val description: String, val addsItem: Boolean = f
     GPS_VERTEX("Добавить вершину по GPS", true),
     LAYERS("Слои"),
     VISIBLE_OBJECTS("Объекты в видимой области"),
+    CHEVRON_DOWN("Выбор из списка"),
+    FILTER_TYPES("Фильтр по типу"),
+    FILTER_LOCATION("Фильтр по привязке"),
     SET_POINT("Установить точку"),
     DONE_AREA("Готово"),
     CANCEL("Отмена"),
@@ -323,7 +342,8 @@ internal fun Context.iconAction(
     minimumWidth = dp(48)
     minimumHeight = dp(48)
     background = RippleDrawable(Palette.ripple,
-        panel(if (primary) Palette.accent else Palette.control, 15), null)
+        panel(if (primary) Palette.accent else Palette.control, 14,
+            if (primary) 0 else Palette.controlBorder), null)
     scaleType = android.widget.ImageView.ScaleType.CENTER
     setPadding(0, 0, 0, 0)
     setOnClickListener { click() }
@@ -459,6 +479,26 @@ internal class FieldIconDrawable(
                 moveTo(15f, 5f)
                 lineTo(8f, 12f)
                 lineTo(15f, 19f)
+            }
+            FieldIcon.CHEVRON_DOWN -> path {
+                moveTo(5f, 9f)
+                lineTo(12f, 16f)
+                lineTo(19f, 9f)
+            }
+            FieldIcon.FILTER_TYPES -> {
+                line(4f, 5f, 20f, 5f)
+                line(7f, 12f, 17f, 12f)
+                line(10f, 19f, 14f, 19f)
+            }
+            FieldIcon.FILTER_LOCATION -> {
+                circle(12f, 9f, 2f)
+                path {
+                    moveTo(12f, 21f)
+                    cubicTo(10f, 18f, 5f, 13f, 5f, 9f)
+                    cubicTo(5f, 1f, 19f, 1f, 19f, 9f)
+                    cubicTo(19f, 13f, 14f, 18f, 12f, 21f)
+                    close()
+                }
             }
             FieldIcon.VISIBLE_OBJECTS -> {
                 for (y in listOf(6f, 12f, 18f)) {

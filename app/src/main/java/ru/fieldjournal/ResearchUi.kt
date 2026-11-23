@@ -65,7 +65,11 @@ internal fun MainActivity.chooseResearchSite(title: String, allowNone: Boolean, 
     fieldworkSheet(title) { dialog ->
         val search = edit("Название или учётный номер", "")
         addView(search, -1, -2)
-        if (allowNone) addView(action("Без привязки") { dialog.dismiss(); bind(null) }, -1, -2)
+        if (allowNone) {
+            addSpace(8)
+            addView(action("Без привязки") { dialog.dismiss(); bind(null) }, -1, -2)
+        }
+        addSpace(8)
         val rows = ListView(this@chooseResearchSite)
         addView(rows, -1, dp(270))
         var nearby = false
@@ -103,31 +107,78 @@ internal fun MainActivity.editStructuredFields(
     val dialog = AlertDialog.Builder(this).setTitle(title).setNegativeButton("Применить", null)
         .setPositiveButton("Отмена", null).create()
     dialog.setCanceledOnTouchOutside(false)
-    val fields = linkedMapOf<String, android.widget.EditText>()
+    val readers = linkedMapOf<String, () -> String>()
     val form = vertical().apply {
-        setPadding(dp(18), dp(8), dp(18), dp(16))
+        setPadding(dp(18), dp(12), dp(18), dp(16))
         for ((key, caption) in captions) {
-            addView(label(caption, 14f, Palette.heading, true), -1, -2)
-            val input = edit(caption, current[key].orEmpty(), if (key in setOf("claim", "quote", "description", "methods", "schema")) 2 else 1)
-            fields[key] = input
-            addView(input, -1, -2)
-            if (key == "url") webUri(current[key].orEmpty())?.let { url -> addView(action("Открыть источник") { openLink(url.toString()) }, -1, -2) }
+            val fieldId = android.view.View.generateViewId()
+            addView(label(caption, 14f, Palette.heading, true).apply { labelFor = fieldId }, -1, -2)
+            addSpace(4)
             val options = researchChoices[key]
-            if (options != null) addView(action("Выбрать · $caption") {
-                AlertDialog.Builder(this@editStructuredFields).setTitle(caption).setItems(options.toTypedArray()) { _, position ->
-                    input.setText(options[position])
-                }.setPositiveButton("Отмена", null).show()
-            }, -1, -2)
-            selectors[key]?.let { select ->
-                addView(action("Выбрать · $caption") { select { input.setText(it) } }, -1, -2)
+            val selector = selectors[key]
+            if (options != null && key in setOf("location_status", "public", "public_photo")) {
+                var value = current[key].orEmpty()
+                val unset = "Не указано"
+                val choices = listOf(unset) + options
+                addView(choiceAction(value.ifBlank { "Выбрать" }) { button ->
+                    chooseOption(caption, choices, value.ifBlank { unset }) { selected ->
+                        value = selected.takeUnless { it == unset }.orEmpty()
+                        button.text = value.ifBlank { "Выбрать" }
+                    }
+                }.apply { id = fieldId }, -1, -2)
+                readers[key] = { value }
+            } else if (selector != null) {
+                var value = current[key].orEmpty()
+                fun display() = when (key) {
+                    "source_id" -> sources().firstOrNull { it.id == value }?.let(::entryName)
+                    else -> null
+                } ?: if (value.isBlank()) "Выбрать" else "Выбрано"
+                val clear = action("Убрать привязку") {}
+                val separator = android.view.View(this@editStructuredFields)
+                fun updateClear() {
+                    val visibility = if (value.isBlank()) android.view.View.GONE else android.view.View.VISIBLE
+                    clear.visibility = visibility
+                    separator.visibility = visibility
+                }
+                val choice = choiceAction(display()) { button ->
+                    selector { selected ->
+                        value = selected
+                        button.text = display()
+                        updateClear()
+                    }
+                }.apply { id = fieldId }
+                readers[key] = { value }
+                clear.setOnClickListener {
+                    value = ""
+                    choice.text = display()
+                    updateClear()
+                }
+                addView(choice, -1, -2)
+                addView(separator, 1, dp(8))
+                addView(clear, -1, -2)
+                updateClear()
+            } else {
+                val multiLine = key in setOf("claim", "quote", "description", "methods", "schema", "evidence", "location_evidence", "limits")
+                val input = edit(caption, current[key].orEmpty(), if (multiLine) 2 else 1).apply { id = fieldId }
+                addView(input, -1, -2)
+                readers[key] = { input.text.toString().trim() }
+                if (key == "url") webUri(current[key].orEmpty())?.let { url ->
+                    addSpace(8)
+                    addView(secondaryAction("Открыть источник", FieldIcon.LINK) { openLink(url.toString()) }, -1, -2)
+                }
+                if (options != null) {
+                    addSpace(8)
+                    addView(choiceAction("Выбрать из списка") {
+                        chooseOption(caption, options, input.text.toString()) { input.setText(it) }
+                    }, -1, -2)
+                }
             }
-            addSpace(8)
+            addSpace(14)
         }
     }
-    dialog.setView(ScrollView(this).apply { addView(form) })
+    dialog.setView(ScrollView(this).apply { clipToPadding = false; addView(form) })
     dialog.show()
-    fun values() = current - captions.keys +
-        fields.mapValues { it.value.text.toString().trim() }.filterValues(String::isNotEmpty)
+    fun values() = current - captions.keys + readers.mapValues { (_, read) -> read() }.filterValues(String::isNotEmpty)
     fun applyFields() {
         onSave(values())
         dialog.dismiss()
@@ -139,7 +190,7 @@ internal fun MainActivity.editStructuredFields(
         }
         if (!dialog.isShowing) dialog.show()
         fieldPrompt("Применить изменения формы?", PromptAction("Применить", ::applyFields),
-            secondary = PromptAction("Отбросить изменения", dialog::dismiss), destructive = true)
+            secondary = PromptAction("Не сохранять", dialog::dismiss), destructive = true)
     }
     dialog.getButton(DialogInterface.BUTTON_NEGATIVE).setOnClickListener { applyFields() }
     dialog.getButton(DialogInterface.BUTTON_POSITIVE).setOnClickListener { confirmExit() }
@@ -210,14 +261,24 @@ internal fun MainActivity.editResearch(
                 fieldworkSheet(entryName(entry)) { detail ->
                     val fields = entry.fields
                     val source = fields["source_id"]?.let { id -> sources().find { it.id == id } }
-                    if (source != null) addView(action("Источник · ${entryName(source)}") { showSource(source) }, -1, -2)
+                    if (source != null) {
+                        addView(action("Источник · ${entryName(source)}") { showSource(source) }, -1, -2)
+                        addSpace(8)
+                    }
                     val original = attachments.find { it.id == fields["original"] }
-                    if (original != null) addView(action("Оригинал · ${original.name}") { openExternalAttachment(original) }, -1, -2)
-                    fields["url"]?.let { url -> addView(action("Открыть источник") { openLink(url) }, -1, -2) }
+                    if (original != null) {
+                        addView(action("Оригинал · ${original.name}") { openExternalAttachment(original) }, -1, -2)
+                        addSpace(8)
+                    }
+                    fields["url"]?.let { url ->
+                        addView(secondaryAction("Открыть источник", FieldIcon.LINK) { openLink(url) }, -1, -2)
+                        addSpace(8)
+                    }
                     val captionsForEntry = forms[entry.kind]?.labels.orEmpty()
                     for ((key, label) in captionsForEntry) fields[key]?.let {
                         if (key != "source_id" && key != "original") addView(label("$label · $it", 14f, Palette.ink))
                     }
+                    addSpace(8)
                     if (entry.kind != "location_history") addView(action("Изменить") {
                         detail.dismiss()
                         editEntry(entry, attachments) { edited ->
@@ -225,12 +286,14 @@ internal fun MainActivity.editResearch(
                             redraw()
                         }
                     }, -1, -2)
+                    addSpace(8)
                     if (entry.previous.isNotEmpty()) addView(action("История изменений · ${entry.previous.size}") {
                         AlertDialog.Builder(this@editResearch).setTitle("Предыдущие редакции")
                             .setMessage(entry.previous.joinToString("\n\n") { fieldsAtTime ->
                                 fieldsAtTime.entries.joinToString("\n") { (key, item) -> "${captionsForEntry[key] ?: key} · $item" }
                             }).setPositiveButton("Закрыть", null).show()
                     }, -1, -2)
+                    addSpace(8)
                     if (entry.kind != "location_history") addView(action("Убрать из карточки") {
                         detail.dismiss()
                         update(value.copy(entries = value.entries.filterNot { it.id == entry.id }))
@@ -239,7 +302,7 @@ internal fun MainActivity.editResearch(
                 }
             }
             list.addSpace(8)
-            list.addView(action("Добавить научную запись") {
+            list.addView(addAction("Добавить научную запись", FieldIcon.NOTE, primary = false) {
                 val kinds = when (tripProfile) {
                     "Раскоп" -> listOf("context", "find", "stratigraphy", "survey", "media", "observation")
                     "Разведка", "Мониторинг" -> listOf("observation", "media", "survey", "claim", "complex_membership", "context", "find", "stratigraphy")
@@ -272,7 +335,11 @@ private fun MainActivity.showSource(source: ResearchEntry) {
         for ((key, caption) in forms.getValue("source").labels) source.fields[key]?.let {
             addView(label("$caption · $it", 14f, Palette.ink))
         }
-        source.fields["url"]?.let { url -> addView(action("Открыть ресурс") { openLink(url) }, -1, -2) }
+        source.fields["url"]?.let { url ->
+            addSpace(8)
+            addView(secondaryAction("Открыть ресурс", FieldIcon.LINK) { openLink(url) }, -1, -2)
+        }
+        addSpace(8)
         addView(action("Изменить источник") {
             dialog.dismiss()
             editEntry(source) { saveSource(it); showSource(it) }

@@ -11,8 +11,8 @@ android {
         applicationId = "ru.fieldjournal"
         minSdk = 26
         targetSdk = 35
-        versionCode = 19
-        versionName = "0.3.1"
+        versionCode = 20
+        versionName = "0.3.2"
     }
     val signingFile = System.getenv("FIELD_JOURNAL_KEYSTORE")
     if (!signingFile.isNullOrBlank()) {

@@ -201,8 +201,8 @@ class StoreSmokeTest {
     private fun acceptSave() {
         val decor = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog().window!!.decorView
         val matches = ArrayList<android.view.View>()
-        decor.findViewsWithText(matches, "Сохранить объект", android.view.View.FIND_VIEWS_WITH_TEXT)
-        matches.filterIsInstance<android.widget.TextView>().single { it.text == "Сохранить объект" }.performClick()
+        decor.findViewsWithText(matches, "Сохранить", android.view.View.FIND_VIEWS_WITH_TEXT)
+        matches.filterIsInstance<android.widget.TextView>().single { it.text == "Сохранить" }.performClick()
         org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
     }
 

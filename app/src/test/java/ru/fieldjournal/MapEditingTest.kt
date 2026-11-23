@@ -344,6 +344,40 @@ class MapEditingTest {
         }
     }
 
+    @Test fun unlocatedCardCanDrawAnAreaAndUsesTheSameLayersPositionAsPoint() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        try {
+            val activity = controller.get()
+            val root = activity.window.decorView
+            fun layersPosition(): List<Int> {
+                layout(root, 320)
+                return IntArray(2).also(root.icon(FieldIcon.LAYERS)::getLocationOnScreen).toList()
+            }
+            root.icon(FieldIcon.POINT).performClick()
+            val pointPosition = layersPosition()
+            root.icon(FieldIcon.CANCEL).performClick()
+
+            val site = Site(title = "Монастырская ограда", vertices = emptyList())
+            activity.store.save(site)
+            activity.openSite(site.id)
+            root.text("Установить на карте").performClick()
+            val options = ShadowAlertDialog.getLatestAlertDialog().listView
+            val area = (0 until options.count).first { options.adapter.getItem(it) == "Область" }
+            options.performItemClick(options.adapter.getView(area, null, options), area, options.adapter.getItemId(area))
+            assertEquals(pointPosition, layersPosition())
+
+            val map = root.descendants().filterIsInstance<FieldMap>().single()
+            val points = listOf(Coordinate(59.0, 33.0), Coordinate(59.0, 33.01), Coordinate(59.01, 33.01))
+            points.forEach { map.onTap?.invoke(it, null) }
+            root.icon(FieldIcon.DONE_AREA).performClick()
+            assertTrue(activity.store.site(site.id)!!.vertices.isEmpty())
+            confirmSave(activity)
+            assertEquals(points, activity.store.site(site.id)!!.vertices)
+        } finally {
+            controller.pause().stop().destroy()
+        }
+    }
+
     @Config(qualifiers = "w320dp-h640dp-mdpi")
     @Test fun narrowAreaToolbarKeepsCancelVisibleAndUndoesRemovalAndMove() {
         val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
@@ -380,7 +414,7 @@ class MapEditingTest {
 
     private fun confirmSave(activity: MainActivity) {
         activity.closeEditor()
-        ShadowAlertDialog.getLatestAlertDialog().window!!.decorView.text("Сохранить объект").performClick()
+        ShadowAlertDialog.getLatestAlertDialog().window!!.decorView.text("Сохранить").performClick()
         shadowOf(Looper.getMainLooper()).idle()
     }
 

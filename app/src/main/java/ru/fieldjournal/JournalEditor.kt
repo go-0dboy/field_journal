@@ -178,29 +178,7 @@ internal class JournalEditor(
         parent.addView(input, -1, -2)
         parent.addSpace(9)
         inputs[key] = input
-        if (withLinks) {
-            input.enableWebLinkTaps(activity::openLink)
-            if (webAddresses(value).any { (range, _) -> range.last - range.first + 1 >= 55 }) {
-                parent.addView(activity.action("Адреса в тексте") {
-                    activity.fieldworkSheet("Ссылки в тексте") {
-                        for ((_, uri) in webAddresses(input.text).distinctBy { it.second }) {
-                            addView(activity.action(uri.host.orEmpty()) { activity.openLink(uri.toString()) }, -1, -2)
-                            addView(activity.action("Скопировать полный адрес") {
-                                val clipboard = activity.getSystemService(android.content.ClipboardManager::class.java)
-                                clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Адрес сайта", uri.toString()))
-                                activity.message("Адрес скопирован")
-                            }, -1, -2)
-                            addSpace(5)
-                        }
-                    }
-                }, -1, -2)
-                parent.addView(activity.action("Редактировать текст") {
-                    input.requestFocus()
-                    activity.getSystemService(android.view.inputmethod.InputMethodManager::class.java)
-                        .showSoftInput(input, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
-                }, -1, -2)
-            }
-        }
+        if (withLinks) input.enableWebLinkTaps(activity::openLink)
         input.watch { changed() }
     }
 
@@ -237,7 +215,7 @@ internal class JournalEditor(
             val base = objectType(type.orEmpty())
             val selected = customColor?.let { base.copy(color = it) } ?: base
             typeRow.addView(SymbolView(activity, selected), activity.dp(40), activity.dp(40))
-            typeRow.addView(activity.secondaryAction(selected.title) {
+            typeRow.addView(activity.choiceAction(selected.title) {
                 activity.chooseType("Условный знак объекта") { picked ->
                     type = picked.id
                     typeControl()
@@ -265,15 +243,20 @@ internal class JournalEditor(
             value.accuracy?.let { add("±${it.toInt()} м") }
         }.joinToString(" · ")
         body.addView(activity.label(summary, 13f, Palette.muted).apply { setTextIsSelectable(true) }, -1, -2)
-        body.addView(activity.secondaryAction(
-            if (value.located) "Положение на карте" else "Установить на карте", FieldIcon.MAP
-        ) {
-            if (value.located) {
+        val placement = if (value.located) {
+            activity.choiceAction("Положение на карте") {
                 info.visibility = if (info.visibility == View.VISIBLE) View.GONE else View.VISIBLE
-            } else {
-                activity.editGeometry(value)
             }
-        }, -1, -2)
+        } else {
+            activity.choiceAction("Установить на карте") {
+                val shapes = listOf("Точка", "Область")
+                activity.chooseOption("Геометрия объекта", shapes, "") { shape ->
+                    activity.editGeometry(value, area = shape == shapes.last())
+                }
+            }
+        }
+        body.addSpace(8)
+        body.addView(placement, -1, -2)
         info.visibility = View.GONE
         info.addView(activity.label(details.joinToString("\n"), 13f, Palette.heading).apply { setTextIsSelectable(true) })
         info.addSpace(8)
@@ -286,8 +269,8 @@ internal class JournalEditor(
             }
         }
         info.addView(actions, -1, -2)
-        info.addSpace(5)
-        info.addView(activity.secondaryAction("Цвет на карте") {
+        info.addSpace(8)
+        info.addView(activity.choiceAction("Цвет на карте") {
             val colors = listOf("Цвет знака" to null, "Синий" to 0xff356295.toInt(),
                 "Бирюзовый" to 0xff23746f.toInt(), "Зелёный" to 0xff48764b.toInt(),
                 "Кирпичный" to 0xffa4512f.toInt(), "Фиолетовый" to 0xff765287.toInt(),
@@ -306,6 +289,7 @@ internal class JournalEditor(
             }
         }, -1, -2)
         body.addView(info, -1, -2)
+        body.addSpace(10)
         field("description", "Описание местности и объекта", value.description, 3, withLinks = true)
         body.addView(activity.secondaryAction("Заполнить по открытым источникам", FieldIcon.LINK) { findPlace() }, -1, -2)
         addMedia()
@@ -536,21 +520,15 @@ internal class JournalEditor(
         parent.addView(activity.vertical().apply {
             background = activity.panel(Palette.pale, 15)
             setPadding(activity.dp(12), activity.dp(12), activity.dp(12), activity.dp(12))
-            addView(activity.action(dateLabel(created)) { }.apply {
-                setOnClickListener { pickDate(this) }
-            }, -1, -2)
-            addSpace(6)
-            addView(activity.action(linkTitle()) { }.apply {
-                setOnClickListener { chooseSite(this) }
-            }, -1, -2)
+            addView(activity.choiceAction(dateLabel(created), ::pickDate), -1, -2)
+            addSpace(8)
+            addView(activity.choiceAction(linkTitle(), ::chooseSite), -1, -2)
         }, -1, -2)
         parent.addSpace(8)
     }
 
     private fun buildNote(value: Note) {
-        body.addView(activity.action(tripLabel()) { }.apply {
-            setOnClickListener { chooseTrip(this) }
-        }, -1, -2)
+        body.addView(activity.choiceAction(tripLabel(), ::chooseTrip), -1, -2)
         body.addSpace(6)
         if (draft.compact) {
             val context = listOfNotNull(value.siteId?.let(activity.store::site)?.title,
@@ -764,7 +742,7 @@ internal class JournalEditor(
                     changed()
                     activity.message("Вложение убрано из черновика")
                 }
-            }, activity.dp(48), -2)
+            }, LinearLayout.LayoutParams(activity.dp(48), -2).apply { marginStart = activity.dp(8) })
             mediaList.addView(row, -1, -2)
             mediaList.addSpace(5)
         }

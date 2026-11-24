@@ -11,8 +11,8 @@ android {
         applicationId = "ru.fieldjournal"
         minSdk = 26
         targetSdk = 35
-        versionCode = 23
-        versionName = "0.3.3"
+        versionCode = 24
+        versionName = "0.3.4"
     }
     val signingFile = System.getenv("FIELD_JOURNAL_KEYSTORE")
     if (!signingFile.isNullOrBlank()) {
@@ -44,6 +44,7 @@ android {
 }
 
 dependencies {
+    implementation("org.locationtech.proj4j:proj4j:1.4.2")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
     testImplementation("org.robolectric:robolectric:4.14.1")

@@ -5,7 +5,7 @@ import kotlin.math.PI
 import kotlin.math.abs
 
 internal enum class RasterFormat(val title: String) {
-    MBTILES("MBTiles"), SQLITE_DB("SQLiteDB"), GEOPACKAGE("GeoPackage")
+    MBTILES("MBTiles"), SQLITE_DB("SQLiteDB"), GEOPACKAGE("GeoPackage"), OZF2("OZF2")
 }
 
 internal enum class SqliteNumbering(val title: String) {

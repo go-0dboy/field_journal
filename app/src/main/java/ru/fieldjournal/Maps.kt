@@ -5,6 +5,7 @@ import android.database.sqlite.SQLiteDatabase
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import java.io.DataOutputStream
 import java.io.File
 import java.io.InputStream
 import java.net.HttpURLConnection
@@ -81,11 +82,23 @@ internal class MapTiles(context: Context) {
         settings.getString("longitude", "37.0")!!.toDouble()
     ) to settings.getString("zoom", "5.0")!!.toDouble()
 
-    private data class Package(val db: SQLiteDatabase, val archive: RasterArchive)
+    private sealed class Package : AutoCloseable {
+        abstract val info: OfflineInfo
+
+        class Sqlite(private val db: SQLiteDatabase, val archive: RasterArchive) : Package() {
+            override val info get() = archive.info
+            override fun close() = db.close()
+        }
+
+        class Ozi(val archive: Ozf2Archive) : Package() {
+            override val info get() = archive.info
+            override fun close() = archive.close()
+        }
+    }
     private val offlinePackages = mutableMapOf<MapPackage, Package>()
     private val packageLock = Any()
 
-    // These internal paths are kept for packages installed by previous versions.
+    // Keep legacy slot paths. The file signature selects the reader.
     private fun file(slot: MapPackage) = File(folder, "${slot.name}.mbtiles")
 
     private fun packageNameKey(slot: MapPackage) = "archive-name-${slot.name}"
@@ -95,18 +108,21 @@ internal class MapTiles(context: Context) {
         if (layer == MapLayer.HYBRID && !file(MapPackage.HYBRID).isFile) MapPackage.SATELLITE else layer.archive
 
     fun info(slot: MapPackage): OfflineInfo? = synchronized(packageLock) {
-        runCatching { offlinePackage(slot)?.archive?.info }.getOrNull()
+        runCatching { offlinePackage(slot)?.info }.getOrNull()
     }
 
     private fun offlinePackage(slot: MapPackage): Package? {
         offlinePackages[slot]?.let { return it }
         val file = file(slot)
         if (!file.isFile) return null
+        val name = settings.getString(packageNameKey(slot), "").orEmpty()
+        if (file.inputStream().use { it.read() == 0x78 && it.read() == 0x77 }) {
+            return Package.Ozi(Ozf2Archive(file, name)).also { offlinePackages[slot] = it }
+        }
         val db = open(file)
         try {
-            val name = settings.getString(packageNameKey(slot), "").orEmpty()
             val numbering = SqliteNumbering.entries.find { it.name == settings.getString(numberingKey(slot), null) }
-            return Package(db, RasterArchive.open(db, name, numbering)).also { offlinePackages[slot] = it }
+            return Package.Sqlite(db, RasterArchive.open(db, name, numbering)).also { offlinePackages[slot] = it }
         } catch (e: Exception) {
             db.close()
             throw e
@@ -141,13 +157,37 @@ internal class MapTiles(context: Context) {
         }
     }
 
+    fun prepareOzf2(slot: MapPackage, image: InputStream, calibration: InputStream, filename: String): PreparedRaster {
+        require(slot != MapPackage.REFERENCES) { "Для слоя подписей нужен пакет с прозрачными тайлами" }
+        val map = java.io.ByteArrayOutputStream()
+        calibration.copyLimited(map, OziCalibration.MAX_SIZE.toLong())
+        val temp = File(folder, "import-${newId()}.ozf2")
+        val name = filename.substringBeforeLast('.', filename)
+        try {
+            DataOutputStream(temp.outputStream().buffered()).use { output ->
+                image.copyLimited(output, 0xffffffffL)
+                map.writeTo(output)
+                output.writeInt(map.size())
+            }
+            return Ozf2Archive(temp, name).use { archive ->
+                require(archive.rasterName.equals(filename, ignoreCase = true) || filename.isBlank()) {
+                    "В .map указано изображение «${archive.rasterName}». Выберите соответствующий файл OZF2"
+                }
+                PreparedRaster(slot, temp, name, listOf(archive.info), null)
+            }
+        } catch (error: Exception) {
+            temp.delete()
+            throw error
+        }
+    }
+
     fun install(prepared: PreparedRaster, numbering: SqliteNumbering? = null): OfflineInfo = prepared.use {
         val info = if (numbering == null) {
             requireNotNull(prepared.options.singleOrNull()) { "Выберите схему SQLiteDB: XYZ или BigPlanet" }
         } else prepared.options.first { it.numbering == numbering }
         val slot = prepared.slot
         synchronized(packageLock) {
-            offlinePackages.remove(slot)?.db?.close()
+            offlinePackages.remove(slot)?.close()
             check(prepared.file.renameTo(file(slot))) { "Не удалось установить слой карты" }
             settings.edit().putString(packageNameKey(slot), prepared.name)
                 .putString(numberingKey(slot), info.numbering?.name).apply()
@@ -205,7 +245,7 @@ internal class MapTiles(context: Context) {
                 (mercator(point.latitude) * count).toInt().coerceIn(0, count - 1))
         }
         slots.distinct().flatMap { slot ->
-            val archive = offlinePackage(slot)?.archive
+            val archive = offlinePackage(slot)
             zooms.map { zoom ->
                 var native = 0
                 var enlarged = 0
@@ -214,9 +254,14 @@ internal class MapTiles(context: Context) {
                     val key = tile(point, zoom)
                     if (archive == null) { missing += point; continue }
                     val info = archive.info
-                    val hit = (min(zoom, info.maxZoom) downTo max(info.minZoom, zoom - 7)).firstOrNull { z ->
-                        val shift = zoom - z
-                        archive.tile(Tile(z, key.x shr shift, key.y shr shift)) != null
+                    val hit = when (archive) {
+                        is Package.Ozi -> min(zoom, info.maxZoom).takeIf {
+                            it >= info.minZoom && archive.archive.covers(point)
+                        }
+                        is Package.Sqlite -> (min(zoom, info.maxZoom) downTo max(info.minZoom, zoom - 7)).firstOrNull { z ->
+                            val shift = zoom - z
+                            archive.archive.tile(Tile(z, key.x shr shift, key.y shr shift)) != null
+                        }
                     }
                     when (hit) {
                         zoom -> native++
@@ -231,7 +276,9 @@ internal class MapTiles(context: Context) {
 
     private fun readOffline(slot: MapPackage, tile: Tile): Bitmap? {
         return synchronized(packageLock) {
-            val archive = offlinePackage(slot)?.archive ?: return@synchronized null
+            val source = offlinePackage(slot) ?: return@synchronized null
+            if (source is Package.Ozi) return@synchronized source.archive.read(tile)
+            val archive = (source as Package.Sqlite).archive
             val info = archive.info
             for (z in min(tile.z, info.maxZoom) downTo max(info.minZoom, tile.z - 7)) {
                 val shift = tile.z - z

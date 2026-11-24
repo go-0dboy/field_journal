@@ -143,6 +143,10 @@ class MainActivity : Activity() {
     private var pendingIsNote = false
     private var pendingCamera: String? = null
     private var pendingMap: MapLayer? = null
+    private sealed interface RasterSelection
+    private data class OziSelection(val slot: MapPackage, val first: Uri, val isImage: Boolean) : RasterSelection
+    private data class ReadyRaster(val raster: PreparedRaster) : RasterSelection
+    private var pendingOzi: OziSelection? = null
     private var foreground = false
     private var ioTask: IoTask? = null
     private var progressDialog: AlertDialog? = null
@@ -216,6 +220,9 @@ class MainActivity : Activity() {
             pendingIsNote = it.getBoolean("pendingIsNote")
             pendingCamera = it.getString("pendingCamera")
             pendingMap = it.getString("pendingMap")?.let(MapLayer::valueOf)
+            val oziSlot = it.getString("pendingOziSlot")?.let(MapPackage::valueOf)
+            val oziUri = it.getString("pendingOziUri")?.let(Uri::parse)
+            if (oziSlot != null && oziUri != null) pendingOzi = OziSelection(oziSlot, oziUri, it.getBoolean("pendingOziImage"))
             trackTripId = it.getString("trackTripId")
             diaryPage = DiaryPage.valueOf(it.getString("diaryPage", DiaryPage.RECORDS.name))
             diaryTripId = it.getString("diaryTripId")
@@ -348,6 +355,11 @@ class MainActivity : Activity() {
         out.putBoolean("pendingIsNote", pendingIsNote)
         out.putString("pendingCamera", pendingCamera)
         out.putString("pendingMap", pendingMap?.name)
+        pendingOzi?.let {
+            out.putString("pendingOziSlot", it.slot.name)
+            out.putString("pendingOziUri", it.first.toString())
+            out.putBoolean("pendingOziImage", it.isImage)
+        }
         out.putString("trackTripId", trackTripId)
         out.putString("diaryPage", diaryPage.name)
         out.putString("diaryTripId", diaryTripId)
@@ -1321,7 +1333,7 @@ class MainActivity : Activity() {
                 if (history == null) {
                     group.addView(label("Историческая карта", 17f, Palette.heading, true))
                     group.addSpace(4)
-                    group.addView(label("MBTiles, SQLiteDB, GeoPackage", 13f, Palette.muted))
+                    group.addView(label("MBTiles, SQLiteDB, GeoPackage, OZF2 + .map", 13f, Palette.muted))
                     group.addSpace(6)
                     group.addView(addAction("Подключить карту", FieldIcon.MAP, primary = false) {
                         dialog.dismiss()
@@ -1901,7 +1913,7 @@ class MainActivity : Activity() {
             val detail = when {
                 info != null -> "${info.name} · ${info.format.title} · масштаб ${info.minZoom}–${info.maxZoom}"
                 layer == MapLayer.HYBRID && tiles.info(MapPackage.SATELLITE) != null -> "Используется офлайн-спутник · можно подключить свою карту"
-                else -> "MBTiles, SQLiteDB или GeoPackage"
+                else -> "MBTiles, SQLiteDB, GeoPackage, OZF2 + .map"
             }
             row(maps, "Офлайн · ${layer.title}", detail) {
                 if (info == null) pickMap(layer) else {
@@ -1917,7 +1929,9 @@ class MainActivity : Activity() {
             Triple(MapPackage.REFERENCES, "Локальные дороги и подписи", REFERENCES)
         )) {
             val archive = tiles.info(slot)
-            row(maps, title, archive?.let { "${it.name} · ${it.format.title}" } ?: "MBTiles, SQLiteDB или GeoPackage") {
+            val formats = if (slot == MapPackage.HISTORICAL) "MBTiles, SQLiteDB, GeoPackage, OZF2 + .map"
+                else "MBTiles, SQLiteDB или GeoPackage"
+            row(maps, title, archive?.let { "${it.name} · ${it.format.title}" } ?: formats) {
                 pickDocument(request, "*/*")
             }
         }
@@ -2102,6 +2116,15 @@ class MainActivity : Activity() {
             }
         }
         dialog.show()
+    }
+
+    private fun pickOziCompanion(selection: OziSelection) {
+        val detail = if (selection.isImage) "Выберите файл привязки .map, который относится к этому изображению."
+            else "Выберите файл изображения .ozf2, указанный в файле привязки."
+        fieldPrompt("Подключить карту OziExplorer", PromptAction("Выбрать файл") {
+            pendingOzi = selection
+            pickDocument(OZI_COMPANION, "*/*")
+        }, detail = detail)
     }
 
     private fun pickMap(layer: MapLayer) {
@@ -2306,18 +2329,45 @@ class MainActivity : Activity() {
                 pendingMap = null
                 if (resultCode != RESULT_OK || uri == null || slot == null) return
                 val mapTiles = tiles
-                withIo("Чтение файла карты", abandoned = PreparedRaster::close, work = {
+                withIo<RasterSelection>("Чтение файла карты", abandoned = { (it as? ReadyRaster)?.raster?.close() }, work = {
                     val name = runCatching { documentName(resolver, uri) }.getOrDefault("")
-                    requireNotNull(resolver.openInputStream(uri)) { "Не удалось открыть файл карты" }.use {
-                        mapTiles.prepare(slot, it, name)
+                    val extension = name.substringAfterLast('.', "").lowercase()
+                    if (extension == "ozf2" || extension == "map") {
+                        require(slot != MapPackage.REFERENCES) { "Для слоя подписей нужен пакет с прозрачными тайлами" }
+                        OziSelection(slot, uri, extension == "ozf2")
+                    } else {
+                        requireNotNull(resolver.openInputStream(uri)) { "Не удалось открыть файл карты" }.use {
+                            ReadyRaster(mapTiles.prepare(slot, it, name))
+                        }
                     }
-                }) {
-                    if (it.options.size == 1) finishRasterImport(it)
-                    else {
-                        preparedRaster = it
-                        showRasterChoice()
+                }) { selection ->
+                    when (selection) {
+                        is OziSelection -> pickOziCompanion(selection)
+                        is ReadyRaster -> {
+                            if (selection.raster.options.size == 1) finishRasterImport(selection.raster)
+                            else {
+                                preparedRaster = selection.raster
+                                showRasterChoice()
+                            }
+                        }
                     }
                 }
+            }
+            OZI_COMPANION -> {
+                val selection = pendingOzi
+                pendingOzi = null
+                if (resultCode != RESULT_OK || uri == null || selection == null) return
+                val image = if (selection.isImage) selection.first else uri
+                val sidecar = if (selection.isImage) uri else selection.first
+                val mapTiles = tiles
+                withIo("Подключение OZF2", abandoned = PreparedRaster::close, work = {
+                    val name = documentName(resolver, image)
+                    requireNotNull(resolver.openInputStream(sidecar)) { "Не удалось открыть файл привязки .map" }.use { map ->
+                        requireNotNull(resolver.openInputStream(image)) { "Не удалось открыть изображение OZF2" }.use { raster ->
+                            mapTiles.prepareOzf2(selection.slot, raster, map, name)
+                        }
+                    }
+                }) { finishRasterImport(it) }
             }
             IMPORT -> {
                 if (resultCode != RESULT_OK || uri == null) return
@@ -2565,6 +2615,7 @@ class MainActivity : Activity() {
         private const val PUBLIC_ZIP = 24
         private const val BACKUP_PARTS_WRITE = 25
         private const val BACKUP_PARTS_READ = 26
+        private const val OZI_COMPANION = 27
         private val io = Executors.newSingleThreadExecutor()
         private val diaryReads = Executors.newSingleThreadExecutor()
 

@@ -42,7 +42,8 @@ class Ozf2ArchiveTest {
         for (pass in listOf(TilePass.BASE, TilePass.HISTORICAL)) {
             assertEquals(Color.RED, read(Coordinate(59.8, 33.5), pass))
             assertEquals(Color.BLUE, read(Coordinate(59.2, 33.5), pass))
-            assertNull(read(Coordinate(61.0, 33.5), pass))
+            assertEquals(Color.TRANSPARENT, read(Coordinate(61.0, 33.5), pass))
+            assertNull(read(Coordinate(70.0, 33.5), pass))
         }
         val coverage = reopened.coverage(listOf(Coordinate(59.75, 33.5)), listOf(zoom), listOf(MapPackage.HISTORICAL))
         assertEquals(1, coverage.single().native)

@@ -1,6 +1,7 @@
 package ru.fieldjournal
 
 import org.locationtech.proj4j.CRSFactory
+import org.locationtech.proj4j.CoordinateReferenceSystem
 import org.locationtech.proj4j.CoordinateTransformFactory
 import org.locationtech.proj4j.ProjCoordinate
 import kotlin.math.abs
@@ -44,6 +45,7 @@ internal class OziCalibration(data: ByteArray, val width: Int, val height: Int) 
         fun origin() = "+lat_0=${setupValue(1, 0.0)} +lon_0=${setupValue(2, 0.0)}"
         val lonLat = name.equals("Latitude/Longitude", ignoreCase = true)
         val projectionParameters = when (name.lowercase()) {
+            "bonne" -> null
             "latitude/longitude" -> "+proj=longlat"
             "mercator" -> "+proj=merc ${origin()} +k_0=${setupValue(3, 1.0)} ${offsets()}"
             "transverse mercator", "gauss-kruger", "gauss-krüger" ->
@@ -75,7 +77,15 @@ internal class OziCalibration(data: ByteArray, val width: Int, val height: Int) 
         val transforms = CoordinateTransformFactory()
         val wgs = factory.createFromParameters("WGS84", "+proj=longlat +datum=WGS84")
         val geographic = factory.createFromParameters("Ozi datum", "+proj=longlat $ellipsoid")
-        val projected = factory.createFromParameters("Ozi projection", "$projectionParameters $ellipsoid" +
+        val projected = if (projectionParameters == null) {
+            // OziExplorer files such as the three-verst sheets store the Bonne parallel as latitude of origin.
+            val parallel = requireNotNull(setup.number(6) ?: setup.number(1)) {
+                "В .map не указана стандартная параллель проекции Бонна (Bonne)"
+            }
+            val bonne = OziBonneProjection(geographic.datum.ellipsoid, parallel, setupValue(2, 0.0),
+                setupValue(4, 0.0), setupValue(5, 0.0))
+            CoordinateReferenceSystem("Ozi Bonne", null, geographic.datum, bonne)
+        } else factory.createFromParameters("Ozi projection", "$projectionParameters $ellipsoid" +
             if (lonLat) "" else " +units=m")
         toMap = transforms.createTransform(wgs, projected)
         toWgs = transforms.createTransform(projected, wgs)

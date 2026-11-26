@@ -166,8 +166,10 @@ internal class JournalEditor(
                 }
             }
             if (activeScroll !== next) {
-                activity.getSystemService(android.view.inputmethod.InputMethodManager::class.java)
-                    ?.hideSoftInputFromWindow(windowToken, 0)
+                windowToken?.let { token ->
+                    activity.getSystemService(android.view.inputmethod.InputMethodManager::class.java)
+                        ?.hideSoftInputFromWindow(token, 0)
+                }
                 activeScroll.visibility = View.GONE
                 activeScroll = next
             }

@@ -512,7 +512,7 @@ class MainActivity : Activity() {
         if (viewingTrip) {
             val id = requireNotNull(diaryTripId)
             val trip = store.trips.get(id)
-            setEditorHeader(trip?.title ?: "Выезд", back = ::closeTripDetails, done = ::closeTripDetails)
+            setEditorHeader(trip?.title ?: "Выезд", back = ::closeTripDetails, done = ::closeTripDetails, doneLabel = "Готово")
             showTripPage(listBody(), id)
             return
         }
@@ -542,7 +542,10 @@ class MainActivity : Activity() {
         nav.visibility = if (editorId != null || newTrip != null || viewingTrip || keyboardVisible) View.GONE else View.VISIBLE
     }
 
-    private fun setEditorHeader(title: String, back: () -> Unit = ::closeEditor, done: () -> Unit = ::closeEditor) {
+    private fun setEditorHeader(
+        title: String, back: () -> Unit = ::closeEditor, done: () -> Unit = ::closeEditor,
+        doneLabel: String = "Сохранить и закрыть"
+    ) {
         val row = horizontal().apply {
             setPadding(dp(16), dp(8), dp(16), dp(8))
             setBackgroundColor(Palette.white)
@@ -551,9 +554,8 @@ class MainActivity : Activity() {
         val name = label(title, 19f, Palette.heading, true)
         if (android.os.Build.VERSION.SDK_INT >= 28) name.isAccessibilityHeading = true
         row.addView(name, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(10) })
-        row.addView(editorAction(done = true, click = done), LinearLayout.LayoutParams(dp(48), dp(48)).apply {
-            marginStart = dp(8)
-        })
+        val doneButton = editorAction(done = true, click = done).apply { contentDescription = doneLabel }
+        row.addView(doneButton, LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginStart = dp(8) })
         header.addView(row)
         header.addView(View(this).apply { setBackgroundColor(Palette.border) }, -1, dp(1))
     }

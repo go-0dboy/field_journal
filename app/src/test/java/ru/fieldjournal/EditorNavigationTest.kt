@@ -565,7 +565,7 @@ class EditorNavigationTest {
             restored.action("Назад").performClick()
             assertTrue(restored.text("Выезды").isShown)
             (restored.text(trip.title).parent.parent as View).performClick()
-            restored.action("Сохранить и закрыть").performClick()
+            restored.action("Готово").performClick()
             assertTrue(restored.text("Выезды").isShown)
             assertEquals(trip.id, activity.store.trips.active()?.id)
         } finally {

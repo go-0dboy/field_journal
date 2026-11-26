@@ -392,6 +392,7 @@ class EditorNavigationTest {
             root.text("Дневник").performClick()
             root.text("Скрыть маршрут").performClick()
             root.text("Показать маршрут")
+            root.action("Готово").performClick()
             root.text("Карта").performClick()
             root.action("Слои").performClick()
             val layers = ShadowAlertDialog.getLatestAlertDialog()

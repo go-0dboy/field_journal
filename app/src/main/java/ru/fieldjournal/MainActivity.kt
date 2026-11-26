@@ -113,6 +113,7 @@ class MainActivity : Activity() {
     private var previousTab = Tab.MAP
     private var editorId: String? = null
     private var editorIsNote = false
+    private var editorSitePage = SitePage.DESCRIPTION
     private var noteOriginId: String? = null
     private var noteOriginScroll = 0
     private var editView: JournalEditor? = null
@@ -177,6 +178,7 @@ class MainActivity : Activity() {
             previousTab = Tab.valueOf(it.getString("previous", tab.name))
             editorId = it.getString("editor")
             editorIsNote = it.getBoolean("isNote")
+            editorSitePage = SitePage.valueOf(it.getString("editorSitePage", SitePage.DESCRIPTION.name))
             noteOriginId = it.getString("noteOriginId")
             noteOriginScroll = it.getInt("noteOriginScroll")
             drawMode = DrawMode.valueOf(it.getString("draw", DrawMode.NONE.name))
@@ -325,6 +327,7 @@ class MainActivity : Activity() {
         out.putString("previous", previousTab.name)
         out.putString("editor", editorId)
         out.putBoolean("isNote", editorIsNote)
+        out.putString("editorSitePage", (editView?.selectedPage ?: editorSitePage).name)
         out.putString("noteOriginId", noteOriginId)
         out.putInt("noteOriginScroll", noteOriginScroll)
         out.putString("draw", drawMode.name)
@@ -441,10 +444,7 @@ class MainActivity : Activity() {
             newTrip != null -> closeNewTrip()
             editorId != null -> closeEditor()
             drawMode != DrawMode.NONE -> cancelDraw()
-            tab == Tab.NOTES && diaryPage == DiaryPage.TRIPS && diaryTripId != null -> {
-                diaryTripId = null
-                render()
-            }
+            viewingTrip -> closeTripDetails()
             tab == Tab.NOTES && filterTripNotes != null -> {
                 filterTripNotes = null
                 render()
@@ -495,7 +495,7 @@ class MainActivity : Activity() {
             if (draft != null) {
                 setEditorHeader(if (draft.note != null) "Запись дневника" else "Карточка объекта")
                 updateNavigationVisibility()
-                editView = JournalEditor(this, draft).also { editor ->
+                editView = JournalEditor(this, draft, editorSitePage).also { editor ->
                     content.addView(editor)
                     editor.restoreScroll(editorScroll)
                 }
@@ -509,6 +509,13 @@ class MainActivity : Activity() {
             }
         }
         updateNavigationVisibility()
+        if (viewingTrip) {
+            val id = requireNotNull(diaryTripId)
+            val trip = store.trips.get(id)
+            setEditorHeader(trip?.title ?: "Выезд", back = ::closeTripDetails, done = ::closeTripDetails)
+            showTripPage(listBody(), id)
+            return
+        }
         val onMap = tab == Tab.MAP
         nav.background = panel(if (onMap) Palette.floatingSurface else Palette.white, 20, Palette.border)
         nav.elevation = dp(if (onMap) 4 else 2).toFloat()
@@ -529,8 +536,10 @@ class MainActivity : Activity() {
         }
     }
 
+    private val viewingTrip get() = tab == Tab.NOTES && diaryPage == DiaryPage.TRIPS && diaryTripId != null
+
     private fun updateNavigationVisibility() {
-        nav.visibility = if (editorId != null || newTrip != null || keyboardVisible) View.GONE else View.VISIBLE
+        nav.visibility = if (editorId != null || newTrip != null || viewingTrip || keyboardVisible) View.GONE else View.VISIBLE
     }
 
     private fun setEditorHeader(title: String, back: () -> Unit = ::closeEditor, done: () -> Unit = ::closeEditor) {
@@ -803,17 +812,32 @@ class MainActivity : Activity() {
         (mapArea.parent as? android.view.ViewGroup)?.removeView(mapArea)
         header.removeAllViews()
         header.addView(mapCoordinates, -1, -2)
+        val drawingArea = drawMode == DrawMode.AREA || drawMode == DrawMode.MOVE_AREA
+        val width = resources.configuration.screenWidthDp
+        val compactArea = drawingArea && width < 344
+        val splitArea = drawingArea && width in 1..319
+        val horizontalInset = dp(if (compactArea) 6 else 12)
+        val gap = dp(if (compactArea) 3 else 4)
+
+        fun LinearLayout.control(icon: FieldIcon, primary: Boolean = false, click: () -> Unit) =
+            mapAction(icon, primary, click).also { button ->
+                addView(button, LinearLayout.LayoutParams(dp(48), dp(48)).apply {
+                    if (childCount > 0) marginStart = gap
+                })
+            }
+        fun LinearLayout.spacer() = addView(View(this@MainActivity), LinearLayout.LayoutParams(0, 0, 1f))
+        fun LinearLayout.areaConfirmation() {
+            finishAreaButton = control(FieldIcon.DONE_AREA, true) {
+                val error = polygonError(vertices)
+                if (error == null) saveGeometry(vertices.toList()) else message(error.message)
+            }
+            control(FieldIcon.CANCEL) { cancelDraw() }
+        }
+
         header.addView(horizontal().apply {
-            setPadding(dp(12), dp(5), dp(12), dp(6))
+            setPadding(horizontalInset, dp(5), horizontalInset, dp(6))
             clipChildren = false
             clipToPadding = false
-            fun control(icon: FieldIcon, primary: Boolean = false, click: () -> Unit) =
-                mapAction(icon, primary, click).also { button ->
-                    addView(button, LinearLayout.LayoutParams(dp(48), dp(48)).apply {
-                        if (childCount > 0) marginStart = dp(4)
-                    })
-                }
-            fun spacer() = addView(View(this@MainActivity), LinearLayout.LayoutParams(0, 0, 1f))
             when (drawMode) {
                 DrawMode.NONE -> {
                     control(FieldIcon.POINT, true) { beginDraw(DrawMode.POINT) }
@@ -839,26 +863,22 @@ class MainActivity : Activity() {
                 DrawMode.AREA, DrawMode.MOVE_AREA -> {
                     control(FieldIcon.LAYERS) { chooseLayers() }
                     control(FieldIcon.ADD_VERTEX) { addVertex(map.center) }
-                    control(FieldIcon.GPS_VERTEX) {
-                        captureLocation(LocationAction.ADD_VERTEX)
+                    control(FieldIcon.GPS_VERTEX) { captureLocation(LocationAction.ADD_VERTEX) }
+                    undoVertexButton = control(FieldIcon.UNDO_VERTEX) { undoBoundaryChange() }
+                    if (!splitArea) {
+                        spacer()
+                        areaConfirmation()
                     }
-                    spacer()
-                    finishAreaButton = control(FieldIcon.DONE_AREA, true) {
-                        val error = polygonError(vertices)
-                        if (error == null) saveGeometry(vertices.toList()) else message(error.message)
-                    }
-                    control(FieldIcon.CANCEL) { cancelDraw() }
                 }
             }
         }, -1, -2)
-        val drawingArea = drawMode == DrawMode.AREA || drawMode == DrawMode.MOVE_AREA
         if (drawingArea) header.addView(horizontal().apply {
-            setPadding(dp(12), 0, dp(12), 0)
+            setPadding(horizontalInset, 0, horizontalInset, 0)
+            clipChildren = false
+            clipToPadding = false
             mapArea.setPadding(0, dp(3), 0, dp(3))
             addView(mapArea, LinearLayout.LayoutParams(0, -2, 1f))
-            undoVertexButton = mapAction(FieldIcon.UNDO_VERTEX) { undoBoundaryChange() }.also {
-                addView(it, dp(48), dp(48))
-            }
+            if (splitArea) areaConfirmation()
         }, -1, -2)
         header.addView(mapComparisonStatus, -1, -2)
         header.addView(mapTripStatus, -1, -2)
@@ -1627,19 +1647,15 @@ class MainActivity : Activity() {
 
     private fun showNotes() {
         val loading = vertical().apply { setPadding(dp(14), dp(5), dp(14), dp(8)) }
-        loading.addView(horizontal().apply {
-            dividerDrawable = panel(android.graphics.Color.TRANSPARENT).apply { setSize(dp(6), 1) }
-            showDividers = LinearLayout.SHOW_DIVIDER_MIDDLE
-            for (page in DiaryPage.entries) {
-                val count = if (page == DiaryPage.DRAFTS) store.draftCount() else 0
-                val title = if (count > 0) "${page.title} · $count" else page.title
-                addView(diaryPageAction(title, page == diaryPage) {
-                    diaryPage = page
-                    diaryTripId = null
-                    filterTripNotes = null
-                    render()
-                }, LinearLayout.LayoutParams(0, -2, 1f))
-            }
+        val titles = DiaryPage.entries.map { page ->
+            val count = if (page == DiaryPage.DRAFTS) store.draftCount() else 0
+            if (count > 0) "${page.title} · $count" else page.title
+        }
+        loading.addView(pageTabs(titles, diaryPage.ordinal) { index ->
+            diaryPage = DiaryPage.entries[index]
+            diaryTripId = null
+            filterTripNotes = null
+            render()
         }, -1, -2)
         loading.addSpace(8)
         content.addView(loading, -1, -1)
@@ -1647,7 +1663,6 @@ class MainActivity : Activity() {
             val list = vertical()
             loading.addView(ScrollView(this).apply { addView(list) }, LinearLayout.LayoutParams(-1, 0, 1f))
             if (diaryPage == DiaryPage.DRAFTS) showDrafts(list)
-            else if (diaryTripId != null) showTripPage(list, requireNotNull(diaryTripId))
             else showTrips(list)
             return
         }
@@ -2161,6 +2176,7 @@ class MainActivity : Activity() {
 
     internal fun openSite(id: String) {
         if (editorId == null) previousTab = tab
+        editorSitePage = SitePage.DESCRIPTION
         noteOriginId = null
         noteOriginScroll = 0
         editorId = id
@@ -2169,6 +2185,7 @@ class MainActivity : Activity() {
     }
 
     private fun openDraft(draft: EditorDraft) {
+        editorSitePage = SitePage.DESCRIPTION
         draftToOpen = draft
         editorId = draft.id
         editorIsNote = draft.note != null
@@ -2260,6 +2277,7 @@ class MainActivity : Activity() {
         editorId = noteOriginId?.takeIf { store.site(it) != null }
         editorIsNote = false
         editorScroll = if (editorId != null) noteOriginScroll else 0
+        editorSitePage = if (editorId != null) SitePage.RECORDS else SitePage.DESCRIPTION
         noteOriginId = null
         noteOriginScroll = 0
         tab = previousTab

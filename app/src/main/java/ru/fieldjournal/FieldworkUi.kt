@@ -211,27 +211,14 @@ internal fun MainActivity.showTrips(list: LinearLayout) {
 internal fun MainActivity.showTripPage(list: LinearLayout, tripId: String) {
     val contents = runCatching { store.trips.contents(tripId) }.getOrElse {
         empty(list, "Выезд не найден", "Вернитесь к списку выездов.")
-        list.addView(action("Все выезды") { closeTripDetails() }, -1, -2)
         return
     }
     val trip = contents.trip
-    list.addView(action("‹ Все выезды") { closeTripDetails() }, -1, -2)
-    list.addSpace(10)
-    list.addView(label(trip.title, 22f, Palette.heading, true))
-    list.addView(label(trip.profile, 14f, Palette.muted))
-    list.addView(action("Программа работ") {
-        editResearch("Программа работ", trip.research, null, tripProfile = trip.profile) {
-            store.trips.updateResearch(trip.copy(research = it))
-            refreshDiary()
-        }
-    }, -1, -2)
+    list.addView(label(trip.profile, 16f, Palette.heading, true))
+    list.addSpace(4)
     list.addView(label("Начат · ${dateLabel(trip.startedAt)}", 13f, Palette.muted))
     trip.endedAt?.let { list.addView(label("Завершён · ${dateLabel(it)}", 13f, Palette.muted)) }
-    list.addSpace(8)
-    list.addView(action("Записи выезда · ${contents.notes.size}") { showTripRecords(trip.id) }, -1, -2)
-    list.addSpace(6)
-    list.addView(addAction("Запись в выезд", FieldIcon.NOTE) { createNote(null, compact = true, tripId = trip.id) }, -1, -2)
-    list.addSpace(10)
+    list.addSpace(12)
     val stats = label("", 14f, Palette.muted)
     list.addView(stats)
     list.addSpace(6)
@@ -245,6 +232,17 @@ internal fun MainActivity.showTripPage(list: LinearLayout, tripId: String) {
         if (hasRoute && showingTripTrack(trip.id)) hideTripTrack(trip.id) else showTripOnMap(trip.id)
     }
     list.addView(routeToggle, -1, -2)
+    list.addSpace(12)
+    list.addView(action("Программа работ") {
+        editResearch("Программа работ", trip.research, tripProfile = trip.profile, isTrip = true) {
+            store.trips.updateResearch(trip.copy(research = it))
+            refreshDiary()
+        }
+    }, -1, -2)
+    list.addSpace(6)
+    list.addView(action("Записи выезда · ${contents.notes.size}") { showTripRecords(trip.id) }, -1, -2)
+    list.addSpace(6)
+    list.addView(addAction("Запись в выезд", FieldIcon.NOTE) { createNote(null, compact = true, tripId = trip.id) }, -1, -2)
     if (contents.visits.isNotEmpty()) {
         list.addSpace(8)
         list.addView(action("Осмотры · ${contents.visits.size}") {

@@ -65,13 +65,21 @@ internal data class EditorDraft(
     }
 }
 
+internal enum class SitePage(val title: String) {
+    DESCRIPTION("Описание"), SCIENCE("Наука"), RECORDS("Записи")
+}
+
 @android.annotation.SuppressLint("ViewConstructor")
 internal class JournalEditor(
     private val activity: MainActivity,
-    private val draft: EditorDraft
+    private val draft: EditorDraft,
+    initialPage: SitePage = SitePage.DESCRIPTION
 ) : FrameLayout(activity) {
     private val body = activity.vertical()
-    private val scroll = ScrollView(activity).apply { isFillViewport = true; addView(body) }
+    private val descriptionScroll = ScrollView(activity).apply { isFillViewport = true; addView(body) }
+    private var activeScroll = descriptionScroll
+    var selectedPage = initialPage
+        private set
     private val inputs = mutableMapOf<String, EditText>()
     private val site = draft.site
     private val note = draft.note
@@ -117,8 +125,7 @@ internal class JournalEditor(
                 }
             }, -1, -2)
         }
-        addResearch()
-        if (site != null && !isNew) addRelatedNotes()
+        if (note != null) addNoteResearch()
         body.addSpace(15)
         if (!isNew) body.addView(activity.action(if (site != null) "Удалить объект" else "Удалить запись") {
             activity.confirm("Удалить запись?", "Запись будет удалена из локальной базы.") {
@@ -130,8 +137,54 @@ internal class JournalEditor(
                 }.onFailure { activity.message("Не удалось удалить запись") }
             }
         }.apply { setTextColor(Palette.rust) }, -1, -2)
-        addView(scroll, LayoutParams(-1, -1))
-        body.requestFocus()
+        if (site == null) addView(descriptionScroll, LayoutParams(-1, -1))
+        else buildSitePages(initialPage)
+        activeScroll.getChildAt(0).requestFocus()
+    }
+
+    private fun buildSitePages(initialPage: SitePage) {
+        val pageHost = FrameLayout(activity)
+        val pages = mutableMapOf(SitePage.DESCRIPTION to descriptionScroll)
+        pageHost.addView(descriptionScroll, LayoutParams(-1, -1))
+
+        fun select(page: SitePage) {
+            if (page == selectedPage && activeScroll === pages[page]) return
+            val next = pages.getOrPut(page) {
+                val list = activity.vertical().apply {
+                    setPadding(activity.dp(16), activity.dp(10), activity.dp(16), activity.dp(20))
+                    isFocusableInTouchMode = true
+                }
+                when (page) {
+                    SitePage.DESCRIPTION -> error("Description page is already built")
+                    SitePage.SCIENCE -> buildScience(list)
+                    SitePage.RECORDS -> buildRecords(list)
+                }
+                ScrollView(activity).apply {
+                    isFillViewport = true
+                    addView(list)
+                    pageHost.addView(this, LayoutParams(-1, -1))
+                }
+            }
+            if (activeScroll !== next) {
+                activity.getSystemService(android.view.inputmethod.InputMethodManager::class.java)
+                    ?.hideSoftInputFromWindow(windowToken, 0)
+                activeScroll.visibility = View.GONE
+                activeScroll = next
+            }
+            selectedPage = page
+            next.visibility = View.VISIBLE
+            next.getChildAt(0).requestFocus()
+        }
+        val bar = activity.pageTabs(SitePage.entries.map(SitePage::title), initialPage.ordinal) { index ->
+            select(SitePage.entries[index])
+        }.apply {
+            setPadding(activity.dp(16), activity.dp(8), activity.dp(16), 0)
+        }
+        addView(activity.vertical().apply {
+            addView(bar, -1, -2)
+            addView(pageHost, LinearLayout.LayoutParams(-1, 0, 1f))
+        }, LayoutParams(-1, -1))
+        select(initialPage)
     }
 
     private fun section(title: String) {
@@ -143,10 +196,11 @@ internal class JournalEditor(
         body.addSpace(7)
     }
 
-    fun scrollPosition() = scroll.scrollY
+    fun scrollPosition() = activeScroll.scrollY
 
     fun restoreScroll(position: Int) {
-        if (position > 0) scroll.post { scroll.scrollTo(0, position) }
+        val page = activeScroll
+        if (position > 0) page.post { page.scrollTo(0, position) }
     }
 
     private fun field(
@@ -199,7 +253,6 @@ internal class JournalEditor(
     }
 
     private fun buildSite(value: Site) {
-        section("Описание")
         field("title", "Название", value.title)
         parentLink = activity.secondaryAction("", FieldIcon.PARENT_AREA) {
             parentId?.let(activity::openGroupSite)
@@ -612,16 +665,53 @@ internal class JournalEditor(
         }
     }
 
-    private fun addResearch() {
+    private fun addNoteResearch() {
         body.addSpace(14)
-        val title = if (site != null) "Научная карточка" else "Научные сведения"
+        val title = "Научные сведения"
         body.addView(activity.action(title) {
-            activity.editResearch(title, research, site?.located, attachments, linkedTrip?.let(activity.store.trips::get)?.profile) { value ->
-                research = value
-                changed()
-                activity.persistEditorDraft()
+            activity.editResearch(title, research, attachments, linkedTrip?.let(activity.store.trips::get)?.profile, onSave = ::updateResearch)
+        }, -1, -2)
+    }
+
+    private fun updateResearch(value: ResearchCard) {
+        if (value == research) return
+        research = value
+        changed()
+        activity.persistEditorDraft()
+    }
+
+    private fun buildScience(list: LinearLayout) {
+        val details = activity.vertical()
+        val located = requireNotNull(site).located
+        fun redraw() {
+            details.removeAllViews()
+            activity.showSiteRequisites(details, research, located) {
+                updateResearch(it)
+                redraw()
+            }
+            if (research.entries.isEmpty()) {
+                activity.empty(details, "Научных записей пока нет", "Здесь появятся осмотры, замеры и другие материалы по объекту.")
+            }
+            for (entry in research.entries.asReversed()) {
+                details.addView(activity.researchRow(entry, { attachments }, onEdit = { edited ->
+                    updateResearch(research.copy(entries = research.entries.map { if (it.id == edited.id) edited else it }))
+                    redraw()
+                }, onRemove = {
+                    updateResearch(research.copy(entries = research.entries.filterNot { it.id == entry.id }))
+                    redraw()
+                }), -1, -2)
+                details.addSpace(8)
+            }
+        }
+        list.addView(activity.addAction("Добавить научную запись", FieldIcon.NOTE) {
+            activity.addResearchEntry(attachments) {
+                updateResearch(research.copy(entries = research.entries + it))
+                redraw()
             }
         }, -1, -2)
+        list.addSpace(8)
+        list.addView(details, -1, -2)
+        redraw()
     }
 
     private fun chip(row: LinearLayout, title: String, click: () -> Unit) {
@@ -747,15 +837,26 @@ internal class JournalEditor(
         }
     }
 
-    private fun addRelatedNotes() {
-        section("Полевой дневник")
-        body.addView(activity.action("Сравнить снимки осмотров") { activity.compareObservationPhotos(owner) }, -1, -2)
-        body.addSpace(6)
-        for (entry in activity.store.noteSummaries(owner)) {
-            body.addView(activity.action("${entry.title} · ${dateLabel(entry.created)}") { activity.openRelatedNote(entry.id) }, -1, -2)
-            body.addSpace(4)
+    private fun buildRecords(list: LinearLayout) {
+        list.addView(activity.addAction("Запись об объекте", FieldIcon.NOTE) { activity.createNote(owner) }
+            .apply { isEnabled = !isNew }, -1, -2)
+        list.addSpace(8)
+        list.addView(activity.action("Сравнить снимки осмотров") { activity.compareObservationPhotos(owner) }
+            .apply { isEnabled = !isNew }, -1, -2)
+        list.addSpace(12)
+        val notes = if (isNew) emptyList() else activity.store.noteSummaries(owner)
+        if (notes.isEmpty()) {
+            val detail = if (isNew) "Сохраните объект, чтобы добавлять записи и сравнивать снимки."
+                else "Добавьте запись из дневника наблюдений по этому объекту."
+            activity.empty(list, "Записей пока нет", detail)
         }
-        body.addView(activity.addAction("Запись об объекте", FieldIcon.NOTE) { activity.createNote(owner) }, -1, -2)
+        for (note in notes) {
+            list.addView(DiaryRow(activity).apply {
+                bind(note.copy(siteTitle = null))
+                open { activity.openRelatedNote(note.id) }
+            }, -1, -2)
+            list.addSpace(8)
+        }
     }
 
     fun stageAttachment(record: Attachment) {

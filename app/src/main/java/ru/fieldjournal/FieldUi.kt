@@ -266,14 +266,31 @@ internal fun Context.chooseOption(title: String, options: List<String>, selected
         }.setPositiveButton("Отмена", null).show()
 }
 
-internal fun Context.diaryPageAction(title: String, selected: Boolean, click: () -> Unit) =
-    action(title, click = click).apply {
-        isSelected = selected
-        setPadding(dp(4), dp(3), dp(4), dp(3))
-        setTextColor(if (selected) Palette.accent else Palette.heading)
-        background = RippleDrawable(Palette.ripple,
-            panel(if (selected) Palette.pale else Palette.white, 13), panel(Color.WHITE, 13))
+internal fun Context.pageTabs(titles: List<String>, selected: Int, select: (Int) -> Unit) = horizontal().apply {
+    dividerDrawable = panel(Color.TRANSPARENT).apply { setSize(dp(6), 1) }
+    showDividers = LinearLayout.SHOW_DIVIDER_MIDDLE
+    val buttons = titles.mapIndexed { index, title ->
+        action(title) { select(index) }.apply {
+            setPadding(dp(4), dp(3), dp(4), dp(3))
+            addView(this, LinearLayout.LayoutParams(0, -2, 1f))
+        }
     }
+    fun showSelection(index: Int) {
+        buttons.forEachIndexed { position, button ->
+            button.isSelected = index == position
+            button.setTextColor(if (button.isSelected) Palette.accent else Palette.heading)
+            button.background = RippleDrawable(Palette.ripple,
+                panel(if (button.isSelected) Palette.pale else Palette.white, 13), panel(Color.WHITE, 13))
+        }
+    }
+    buttons.forEachIndexed { index, button ->
+        button.setOnClickListener {
+            showSelection(index)
+            select(index)
+        }
+    }
+    showSelection(selected)
+}
 
 internal fun Context.navigationAction(title: String, icon: FieldIcon, selected: Boolean, click: () -> Unit) =
     action(title, click = click).apply {
@@ -722,7 +739,19 @@ internal class DiaryRow(context: Context) : LinearLayout(context) {
     }
 
     fun bind(note: NoteSummary) {
-        title.text = note.title
-        detail.text = listOfNotNull(dateLabel(note.created), note.siteTitle, note.tripTitle).joinToString(" · ")
+        val meta = listOfNotNull(dateLabel(note.created), note.siteTitle, note.tripTitle).joinToString(" · ")
+        bind(note.title, meta)
+    }
+
+    fun bind(name: String, meta: String) {
+        title.text = name
+        detail.text = meta
+        detail.visibility = if (meta.isBlank()) View.GONE else View.VISIBLE
+    }
+
+    fun open(click: () -> Unit) {
+        foreground = RippleDrawable(Palette.ripple, null, context.panel(Color.WHITE, 13))
+        isFocusable = true
+        setOnClickListener { click() }
     }
 }

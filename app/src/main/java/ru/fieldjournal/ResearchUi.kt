@@ -197,7 +197,7 @@ internal fun MainActivity.editStructuredFields(
     dialog.setOnCancelListener { confirmExit() }
 }
 
-private fun entryName(entry: ResearchEntry): String = sequenceOf("title", "claim", "number", "result", "relation")
+private fun entryName(entry: ResearchEntry): String = sequenceOf("title", "claim", "number", "result", "relation", "complex", "purpose", "coordinates")
     .mapNotNull(entry.fields::get).firstOrNull().orEmpty().ifBlank { forms[entry.kind]?.title ?: entry.kind }
 
 private fun MainActivity.editEntry(
@@ -223,10 +223,109 @@ private fun MainActivity.editEntry(
     }
 }
 
+private val siteResearchCaptions = linkedMapOf(
+    "aliases" to "Прежние названия", "location_status" to "Статус местоположения",
+    "location_evidence" to "Основание привязки", "location_date" to "Дата уточнения",
+    "uncertainty" to "Радиус или границы неопределённости", "map_source" to "Лист исторической карты",
+    "public" to "Включить в публичную выгрузку", "public_title" to "Публичное название"
+)
+
+private fun siteResearchFields(card: ResearchCard, located: Boolean): Map<String, String> {
+    val status = if (located) "Ориентир по источнику" else "Не локализован"
+    return mapOf("location_status" to status) + card.fields
+}
+
+internal fun MainActivity.showSiteRequisites(list: LinearLayout, research: ResearchCard, located: Boolean, onSave: (ResearchCard) -> Unit) {
+    val fields = siteResearchFields(research, located)
+    val summary = siteResearchCaptions.mapNotNull { (key, name) ->
+        fields[key]?.takeIf(String::isNotBlank)?.let { "$name · $it" }
+    }
+    card(list, "Реквизиты и происхождение", summary.joinToString("\n")) {
+        editStructuredFields("Реквизиты", siteResearchCaptions, fields) { changes ->
+            onSave(research.copy(fields = (research.fields - siteResearchCaptions.keys) + changes))
+        }
+    }
+}
+
+internal fun MainActivity.addResearchEntry(
+    attachments: List<Attachment>, tripProfile: String? = null, onSave: (ResearchEntry) -> Unit
+) {
+    val kinds = when (tripProfile) {
+        "Раскоп" -> listOf("context", "find", "stratigraphy", "survey", "media", "observation")
+        "Разведка", "Мониторинг" -> listOf("observation", "media", "survey", "claim", "complex_membership", "context", "find", "stratigraphy")
+        else -> forms.keys.filterNot { it in setOf("source", "location_history", "excerpt") }
+    }
+    AlertDialog.Builder(this).setTitle("Вид записи")
+        .setItems(kinds.map { forms.getValue(it).title }.toTypedArray()) { _, index ->
+            editEntry(ResearchEntry(kind = kinds[index], fields = emptyMap()), attachments) {
+                if (it.fields.isNotEmpty()) onSave(it)
+            }
+        }.setPositiveButton("Отмена", null).show()
+}
+
+internal fun MainActivity.researchRow(
+    entry: ResearchEntry, attachments: () -> List<Attachment>, onEdit: (ResearchEntry) -> Unit, onRemove: () -> Unit
+) = DiaryRow(this).apply {
+    val name = entryName(entry)
+    val kind = forms[entry.kind]?.title
+    val date = sequenceOf("measured_at", "observed_at", "saved_at").mapNotNull(entry.fields::get)
+        .firstOrNull { it.isNotBlank() }
+    bind(name, listOfNotNull(kind?.takeUnless { it == name }, date).joinToString(" · "))
+    open { showResearchEntry(entry, attachments(), onEdit, onRemove) }
+}
+
+private fun MainActivity.showResearchEntry(
+    entry: ResearchEntry, attachments: List<Attachment>, onEdit: (ResearchEntry) -> Unit, onRemove: () -> Unit
+) {
+    fieldworkSheet(entryName(entry)) { detail ->
+        val fields = entry.fields
+        val source = fields["source_id"]?.let { id -> sources().find { it.id == id } }
+        if (source != null) {
+            addView(action("Источник · ${entryName(source)}") { showSource(source) }, -1, -2)
+            addSpace(8)
+        }
+        val original = attachments.find { it.id == fields["original"] }
+        if (original != null) {
+            addView(action("Оригинал · ${original.name}") { openExternalAttachment(original) }, -1, -2)
+            addSpace(8)
+        }
+        fields["url"]?.let { url ->
+            addView(secondaryAction("Открыть источник", FieldIcon.LINK) { openLink(url) }, -1, -2)
+            addSpace(8)
+        }
+        val captions = forms[entry.kind]?.labels ?: fields.keys.associateWith { it }
+        for ((key, label) in captions) fields[key]?.let {
+            if (key != "source_id" && key != "original") addView(label("$label · $it", 14f, Palette.ink))
+        }
+        if (entry.kind != "location_history" && entry.kind in forms) {
+            addSpace(8)
+            addView(action("Изменить") {
+                detail.dismiss()
+                editEntry(entry, attachments, onEdit)
+            }, -1, -2)
+        }
+        if (entry.previous.isNotEmpty()) {
+            addSpace(8)
+            addView(action("История изменений · ${entry.previous.size}") {
+                AlertDialog.Builder(this@showResearchEntry).setTitle("Предыдущие редакции")
+                    .setMessage(entry.previous.joinToString("\n\n") { fieldsAtTime ->
+                        fieldsAtTime.entries.joinToString("\n") { (key, value) -> "${captions[key] ?: key} · $value" }
+                    }).setPositiveButton("Закрыть", null).show()
+            }, -1, -2)
+        }
+        if (entry.kind != "location_history") {
+            addSpace(8)
+            addView(action("Убрать из карточки") {
+                detail.dismiss()
+                onRemove()
+            }, -1, -2)
+        }
+    }
+}
+
 internal fun MainActivity.editResearch(
-    title: String, cardValue: ResearchCard, located: Boolean?,
-    attachments: List<Attachment> = emptyList(), tripProfile: String? = null,
-    onSave: (ResearchCard) -> Unit
+    title: String, cardValue: ResearchCard, attachments: List<Attachment> = emptyList(),
+    tripProfile: String? = null, isTrip: Boolean = false, onSave: (ResearchCard) -> Unit
 ) {
     var value = cardValue
     fieldworkSheet(title) {
@@ -240,82 +339,32 @@ internal fun MainActivity.editResearch(
         }
         fun redraw() {
             list.removeAllViews()
-            val captions = when {
-                located != null -> linkedMapOf("aliases" to "Прежние названия", "location_status" to "Статус местоположения",
-                    "location_evidence" to "Основание привязки", "location_date" to "Дата уточнения",
-                    "uncertainty" to "Радиус или границы неопределённости", "map_source" to "Лист исторической карты",
-                    "public" to "Включить в публичную выгрузку", "public_title" to "Публичное название")
-                tripProfile != null -> linkedMapOf("purpose" to "Задача выезда", "observers" to "Исполнители",
-                    "methods" to "Методы и границы работ", "limits" to "Ограничения")
-                else -> emptyMap()
+            if (isTrip) {
+                list.addView(action("Реквизиты и происхождение") {
+                    val captions = linkedMapOf("purpose" to "Задача выезда", "observers" to "Исполнители",
+                        "methods" to "Методы и границы работ", "limits" to "Ограничения")
+                    editStructuredFields("Реквизиты", captions, value.fields) { fields ->
+                        update(value.copy(fields = fields))
+                        redraw()
+                    }
+                }, -1, -2)
+                list.addSpace(8)
             }
-            if (captions.isNotEmpty()) list.addView(action("Реквизиты и происхождение") {
-                val defaults = if (located == null || "location_status" in value.fields) value.fields else
-                    value.fields + ("location_status" to if (located) "Ориентир по источнику" else "Не локализован")
-                editStructuredFields("Реквизиты", captions, defaults) { fields ->
-                    update(value.copy(fields = fields))
+            for (entry in value.entries) {
+                list.addView(researchRow(entry, { attachments }, onEdit = { edited ->
+                    update(value.copy(entries = value.entries.map { if (it.id == edited.id) edited else it }))
+                    redraw()
+                }, onRemove = {
+                    update(value.copy(entries = value.entries.filterNot { it.id == entry.id }))
+                    redraw()
+                }), -1, -2)
+                list.addSpace(8)
+            }
+            list.addView(addAction("Добавить научную запись", FieldIcon.NOTE, primary = false) {
+                addResearchEntry(attachments, tripProfile) { saved ->
+                    update(value.copy(entries = value.entries + saved))
                     redraw()
                 }
-            }, -1, -2)
-            for (entry in value.entries) card(list, entryName(entry), forms[entry.kind]?.title.orEmpty()) {
-                fieldworkSheet(entryName(entry)) { detail ->
-                    val fields = entry.fields
-                    val source = fields["source_id"]?.let { id -> sources().find { it.id == id } }
-                    if (source != null) {
-                        addView(action("Источник · ${entryName(source)}") { showSource(source) }, -1, -2)
-                        addSpace(8)
-                    }
-                    val original = attachments.find { it.id == fields["original"] }
-                    if (original != null) {
-                        addView(action("Оригинал · ${original.name}") { openExternalAttachment(original) }, -1, -2)
-                        addSpace(8)
-                    }
-                    fields["url"]?.let { url ->
-                        addView(secondaryAction("Открыть источник", FieldIcon.LINK) { openLink(url) }, -1, -2)
-                        addSpace(8)
-                    }
-                    val captionsForEntry = forms[entry.kind]?.labels.orEmpty()
-                    for ((key, label) in captionsForEntry) fields[key]?.let {
-                        if (key != "source_id" && key != "original") addView(label("$label · $it", 14f, Palette.ink))
-                    }
-                    addSpace(8)
-                    if (entry.kind != "location_history") addView(action("Изменить") {
-                        detail.dismiss()
-                        editEntry(entry, attachments) { edited ->
-                            update(value.copy(entries = value.entries.map { if (it.id == edited.id) edited else it }))
-                            redraw()
-                        }
-                    }, -1, -2)
-                    addSpace(8)
-                    if (entry.previous.isNotEmpty()) addView(action("История изменений · ${entry.previous.size}") {
-                        AlertDialog.Builder(this@editResearch).setTitle("Предыдущие редакции")
-                            .setMessage(entry.previous.joinToString("\n\n") { fieldsAtTime ->
-                                fieldsAtTime.entries.joinToString("\n") { (key, item) -> "${captionsForEntry[key] ?: key} · $item" }
-                            }).setPositiveButton("Закрыть", null).show()
-                    }, -1, -2)
-                    addSpace(8)
-                    if (entry.kind != "location_history") addView(action("Убрать из карточки") {
-                        detail.dismiss()
-                        update(value.copy(entries = value.entries.filterNot { it.id == entry.id }))
-                        redraw()
-                    }, -1, -2)
-                }
-            }
-            list.addSpace(8)
-            list.addView(addAction("Добавить научную запись", FieldIcon.NOTE, primary = false) {
-                val kinds = when (tripProfile) {
-                    "Раскоп" -> listOf("context", "find", "stratigraphy", "survey", "media", "observation")
-                    "Разведка", "Мониторинг" -> listOf("observation", "media", "survey", "claim", "complex_membership", "context", "find", "stratigraphy")
-                    else -> forms.keys.filterNot { it in setOf("source", "location_history", "excerpt") }
-                }
-                AlertDialog.Builder(this@editResearch).setTitle("Вид записи")
-                    .setItems(kinds.map { forms.getValue(it).title }.toTypedArray()) { _, index ->
-                        val entry = ResearchEntry(kind = kinds[index], fields = emptyMap())
-                        editEntry(entry, attachments) { saved ->
-                            if (saved.fields.isNotEmpty()) update(value.copy(entries = value.entries + saved))
-                            redraw()
-                        }
-                    }.setPositiveButton("Отмена", null).show()
             }, -1, -2)
         }
         redraw()

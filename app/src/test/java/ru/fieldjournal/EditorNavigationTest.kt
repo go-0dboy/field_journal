@@ -127,7 +127,9 @@ class EditorNavigationTest {
             activity.store.save(note)
             activity.openSite(site.id)
             val initial = activity.window.decorView
-            initial.descendants().filterIsInstance<TextView>().first { it.text.startsWith(note.title) }.performClick()
+            initial.text("Записи").performClick()
+            val row = initial.descendants().filterIsInstance<DiaryRow>().single()
+            row.performClick()
             controller.recreate()
 
             val root = controller.get().window.decorView
@@ -137,6 +139,8 @@ class EditorNavigationTest {
             assertEquals(note.weather, root.input("Погода и условия работ").text.toString())
             root.action("Назад").performClick()
             root.text("Карточка объекта")
+            assertTrue(root.text("Записи").isSelected)
+            assertTrue(root.text(note.title).isShown)
             assertEquals(site.title, root.input("Название").text.toString())
 
             root.text("Запись об объекте").performClick()
@@ -146,6 +150,8 @@ class EditorNavigationTest {
             chooseConfirmation("Сохранить")
             root.text("Карточка объекта")
             root.text("Сохранено · Стоянка у реки")
+            assertTrue(root.text("Записи").isSelected)
+            assertTrue(root.text("Повторный обход").isShown)
             assertTrue(controller.get().store.notes().any { it.siteId == site.id && it.title == "Повторный обход" })
         } finally {
             controller.pause().stop().destroy()
@@ -498,9 +504,10 @@ class EditorNavigationTest {
             activity.store.save(site)
             activity.openSite(site.id)
             val root = activity.window.decorView
-            root.text("Научная карточка").performClick()
-            val panel = ShadowAlertDialog.getLatestAlertDialog()
-            panel.window!!.decorView.text("Добавить научную запись").performClick()
+            root.input("Название").setText("Участок у реки")
+            root.text("Наука").performClick()
+            assertTrue(root.text("Реквизиты и происхождение").isShown)
+            root.text("Добавить научную запись").performClick()
             val choices = ShadowAlertDialog.getLatestAlertDialog()
             val kinds = choices.listView
             val index = (0 until kinds.count).first { kinds.adapter.getItem(it).toString() == "Осмотр участка" }
@@ -513,8 +520,9 @@ class EditorNavigationTest {
             assertTrue(form.isShowing)
             assertEquals("Зафиксирована кладка", form.window!!.decorView.input("Результат").text.toString())
             form.window!!.decorView.text("Применить").performClick()
-            panel.window!!.decorView.action("Закрыть").performClick()
-            assertFalse(panel.isShowing)
+            assertTrue(root.text("Зафиксирована кладка").isShown)
+            root.text("Описание").performClick()
+            assertEquals("Участок у реки", root.input("Название").text.toString())
             assertTrue(activity.store.site(site.id)!!.research.entries.isEmpty())
             assertEquals("Зафиксирована кладка", activity.store.draft(site.id)!!.site!!.research.entries.single().fields["result"])
             root.action("Сохранить и закрыть").performClick()
@@ -550,6 +558,16 @@ class EditorNavigationTest {
             val trip = requireNotNull(activity.store.trips.active())
             assertEquals("Осмотр у реки", trip.title)
             assertEquals("Мониторинг", trip.profile)
+            layout(restored)
+            assertTrue(top(restored.text(trip.title)) < top(restored.text(trip.profile)))
+            assertFalse(restored.descendants().filterIsInstance<TextView>().any { it.text.toString().contains("Все выезды") })
+            assertTrue(restored.text("Записать трек").isShown)
+            restored.action("Назад").performClick()
+            assertTrue(restored.text("Выезды").isShown)
+            (restored.text(trip.title).parent.parent as View).performClick()
+            restored.action("Сохранить и закрыть").performClick()
+            assertTrue(restored.text("Выезды").isShown)
+            assertEquals(trip.id, activity.store.trips.active()?.id)
         } finally {
             controller.pause().stop().destroy()
         }
